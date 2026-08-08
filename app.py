@@ -585,9 +585,23 @@ if st.sidebar.button("📱 Maçları Tek Tek Telegram'a Gönder", use_container_
     if not tg_token or not tg_chat_id:
         st.sidebar.error("Lütfen Bot Token ve Chat ID girin.")
     else:
-        with st.spinner(f"{len(curr_filtered)} adet maç tek tek Telegram'a gönderiliyor..."):
-            res = send_matches_individually(tg_token, tg_chat_id, curr_filtered)
-            st.sidebar.success(f"✅ {res['sent']} maç Telegram'a tek tek kart olarak gönderildi! ({res['skipped']} maç önceden gönderilmişti)")
+        import datetime as _dt
+        _now = _dt.datetime.now()
+        _now_min = _now.hour * 60 + _now.minute
+        _max_min = _now_min + 8 * 60
+        _today_str = _now.strftime("%d.%m.%Y")
+        next_8h = [
+            m for m in curr_filtered
+            if m.get('date') == _today_str
+            and _now_min <= parse_time_minutes(m['time']) <= _max_min
+        ]
+        # Bugün maç yoksa tüm filtrelenmiş listeyi gönder
+        target = next_8h if next_8h else curr_filtered
+        window_label = f"önümüzdeki 8 saat ({len(target)} maç)" if next_8h else f"tüm liste ({len(target)} maç)"
+        with st.spinner(f"📱 {window_label} Telegram'a gönderiliyor..."):
+            res = send_matches_individually(tg_token, tg_chat_id, target)
+            st.sidebar.success(f"✅ {res['sent']} maç gönderildi, {res['skipped']} zaten gönderilmişti ({window_label})")
+
 
 if st.sidebar.button("👑 Günün Banko Kuponunu Telegram'a Gönder", use_container_width=True):
     if not tg_token or not tg_chat_id:
