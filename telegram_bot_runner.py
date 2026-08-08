@@ -16,7 +16,8 @@ from telegram_notifier import (
     check_and_update_won_matches,
     send_daily_parlay_coupon,
     send_short_term_coupon,
-    filter_upcoming_not_started_matches
+    filter_upcoming_not_started_matches,
+    turkey_now
 )
 
 BOT_TOKEN = "8940991344:AAFA8qLKgNDdsp__3KThdtnMSXhh2VrrcI4"
@@ -48,8 +49,8 @@ def parse_time_minutes(time_str: str) -> int:
     return 9999
 
 def run_bot_scan(mode="every_2h"):
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    today_date_str = datetime.datetime.now().strftime("%d.%m.%Y")
+    now_str = turkey_now().strftime("%Y-%m-%d %H:%M:%S")
+    today_date_str = turkey_now().strftime("%d.%m.%Y")
     print(f"[{now_str}] Telegram Tarama Başlatılıyor... Mod: {mode}")
     
     try:
@@ -82,7 +83,7 @@ def run_bot_scan(mode="every_2h"):
             
             send_telegram_message(BOT_TOKEN, CHAT_ID, report_text)
             
-            filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+            filename = f"suleymando_bulten_{turkey_now().strftime('%Y%m%d_%H%M')}.csv"
             caption = f"📊 Suleymando {today_date_str} Tüm Bülten ve İY Doğrulama Raporu (.csv)"
             ok = send_telegram_document(BOT_TOKEN, CHAT_ID, csv_bytes, filename, caption)
             print(f"[{now_str}] 🌙 Gece 23:45 CSV Gönderim: {ok}")
@@ -112,7 +113,7 @@ if __name__ == "__main__":
     last_score_check_time       = time.time()
     
     while True:
-        now = datetime.datetime.now()
+        now = turkey_now()
         h, m = now.hour, now.minute
         today_key = now.date()
 

@@ -9,6 +9,10 @@ import pandas as pd
 from typing import Optional, Dict, Any, List, Tuple
 
 TRACKER_FILE = "sent_telegram_matches.json"
+TURKEY_TZ = datetime.timezone(datetime.timedelta(hours=3))
+
+def turkey_now() -> datetime.datetime:
+    return datetime.datetime.now(TURKEY_TZ).replace(tzinfo=None)
 
 def send_telegram_message_raw(bot_token: str, chat_id: str, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not bot_token or not chat_id:
@@ -244,7 +248,7 @@ def generate_daily_parlay_coupon(matches: list, coupon_size: int = 3) -> Dict[st
             'odd': odd
         })
         
-    today_str = datetime.datetime.now().strftime("%d.%m.%Y")
+    today_str = turkey_now().strftime("%d.%m.%Y")
     
     coupon_text = (
         f"👑 <b>SULEYMANDO GÜNÜN BANKO KASA KUPONU</b> 👑\n"
@@ -291,9 +295,12 @@ def _parse_time_minutes(time_str: str) -> int:
         return 9999
 
 def parse_match_datetime(match: dict, now: Optional[datetime.datetime] = None) -> Optional[datetime.datetime]:
-    now = now or datetime.datetime.now()
-    date_str = str(match.get('date') or now.strftime("%d.%m.%Y")).strip()
+    now = now or turkey_now()
+    date_str = str(match.get('date') or "").strip()
     time_str = str(match.get('time') or "").strip()
+
+    if not date_str:
+        return None
 
     try:
         return datetime.datetime.strptime(f"{date_str} {time_str}", "%d.%m.%Y %H:%M")
@@ -301,7 +308,7 @@ def parse_match_datetime(match: dict, now: Optional[datetime.datetime] = None) -
         return None
 
 def is_match_not_started(match: dict, now: Optional[datetime.datetime] = None) -> bool:
-    now = now or datetime.datetime.now()
+    now = now or turkey_now()
     match_dt = parse_match_datetime(match, now)
     if not match_dt or match_dt <= now:
         return False
@@ -320,7 +327,7 @@ def filter_upcoming_not_started_matches(
     window_hours: int = 8,
     now: Optional[datetime.datetime] = None
 ) -> list:
-    now = now or datetime.datetime.now()
+    now = now or turkey_now()
     window_end = now + datetime.timedelta(hours=window_hours)
 
     return [
@@ -335,7 +342,7 @@ def generate_short_term_coupon(matches: list, window_hours: int = 3, coupon_size
     Önümüzdeki `window_hours` saat içinde başlayacak maçlardan en iyi 3'ünü seçer
     ve 'Kısa Vade Kuponu' oluşturur.
     """
-    now = datetime.datetime.now()
+    now = turkey_now()
     window_matches = [m for m in matches if m.get('iy_1_5_ust')]
     window_matches = filter_upcoming_not_started_matches(window_matches, window_hours, now)
 

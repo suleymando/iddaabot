@@ -13,7 +13,8 @@ from telegram_notifier import (
     send_telegram_document,
     send_daily_parlay_coupon,
     send_short_term_coupon,
-    filter_upcoming_not_started_matches
+    filter_upcoming_not_started_matches,
+    turkey_now
 )
 
 app = FastAPI(
@@ -48,7 +49,7 @@ def home():
     return {
         "status": "online",
         "service": "Suleymando İddaa Automation API",
-        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": turkey_now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
 @app.get("/api/scan")
@@ -108,12 +109,12 @@ def trigger_telegram(payload: TelegramTriggerRequest):
             "total_tracked": up_res['total']
         }
     elif mode == "night_2345":
-        today_date_str = datetime.datetime.now().strftime("%d.%m.%Y")
+        today_date_str = turkey_now().strftime("%d.%m.%Y")
         report_text = format_telegram_winrate_report(filt_m, today_date_str)
         send_telegram_message(bot_token, chat_id, report_text)
         
         csv_bytes = generate_csv_bulletin(filt_m, f"Suleymando_GunSonu_{today_date_str}")
-        filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+        filename = f"suleymando_bulten_{turkey_now().strftime('%Y%m%d_%H%M')}.csv"
         caption = f"📊 Suleymando {today_date_str} Tüm Bülten (.csv)"
         send_telegram_document(bot_token, chat_id, csv_bytes, filename, caption)
         

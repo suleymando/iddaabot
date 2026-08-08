@@ -7,6 +7,10 @@ from typing import List, Dict, Any, Tuple, Optional
 
 MACKOLIK_URL = "https://arsiv.mackolik.com/AjaxHandlers/IddaaHandler.aspx?command=tab&type=1&st=1&l=-1&d=-1&i=0&t=&ip=1&w=-1&g=7&np=0&srt=1&srtd=1"
 MACKOLIK_FALLBACK_URL = "https://arsiv.mackolik.com/Iddaa-Programi"
+TURKEY_TZ = datetime.timezone(datetime.timedelta(hours=3))
+
+def turkey_now() -> datetime.datetime:
+    return datetime.datetime.now(TURKEY_TZ).replace(tzinfo=None)
 
 class BulletinScanner:
     """
@@ -70,7 +74,7 @@ class BulletinScanner:
         
         parsed_matches = []
         seen_keys = set()
-        current_date = datetime.datetime.now().strftime("%d.%m.%Y")
+        current_date = turkey_now().strftime("%d.%m.%Y")
         
         for tr in tr_blocks:
             date_m = re.search(r'(\d{2}\.\d{2}\.\d{4})', tr)

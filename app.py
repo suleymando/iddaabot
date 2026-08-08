@@ -16,7 +16,8 @@ from telegram_notifier import (
     check_and_update_won_matches,
     send_daily_parlay_coupon,
     generate_daily_parlay_coupon,
-    filter_upcoming_not_started_matches
+    filter_upcoming_not_started_matches,
+    turkey_now
 )
 
 # Page Configuration
@@ -33,7 +34,7 @@ DEFAULT_CHAT_ID = "-5202583497"
 # Background Scheduler Thread for Streamlit Cloud 24/7 Automation
 def run_cloud_telegram_scan(mode="every_2h"):
     scanner = BulletinScanner()
-    today_date_str = datetime.datetime.now().strftime("%d.%m.%Y")
+    today_date_str = turkey_now().strftime("%d.%m.%Y")
     try:
         all_m, filt_m = scanner.scan_bulletin(min_odds=1.00, max_odds=1.23, fetch_details=True)
         
@@ -45,7 +46,7 @@ def run_cloud_telegram_scan(mode="every_2h"):
             csv_bytes = generate_csv_bulletin(filt_m, f"Suleymando_GunSonu_{today_date_str}")
             
             send_telegram_message(DEFAULT_BOT_TOKEN, DEFAULT_CHAT_ID, report_text)
-            filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+            filename = f"suleymando_bulten_{turkey_now().strftime('%Y%m%d_%H%M')}.csv"
             send_telegram_document(DEFAULT_BOT_TOKEN, DEFAULT_CHAT_ID, csv_bytes, filename, f"📊 Suleymando {today_date_str} Bülten (.csv)")
         else:
             upcoming = filter_upcoming_not_started_matches(filt_m, window_hours=2)
@@ -62,7 +63,7 @@ def init_cloud_scheduler():
             last_night_date = None
             last_2h_time = time.time()
             while True:
-                now = datetime.datetime.now()
+                now = turkey_now()
                 if now.hour == 23 and now.minute == 45 and last_night_date != now.date():
                     run_cloud_telegram_scan(mode="night_2345")
                     last_night_date = now.date()
@@ -581,7 +582,7 @@ if st.sidebar.button("📱 Maçları Tek Tek Telegram'a Gönder", use_container_
         st.sidebar.error("Lütfen Bot Token ve Chat ID girin.")
     else:
         import datetime as _dt
-        _now = _dt.datetime.now()
+        _now = turkey_now()
         target = filter_upcoming_not_started_matches(curr_filtered, window_hours=8, now=_now)
         window_label = f"önümüzdeki 8 saat ({len(target)} maç)"
         if not target:
