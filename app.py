@@ -2,7 +2,12 @@ import streamlit as st
 import pandas as pd
 import datetime
 from bulletin_scanner import BulletinScanner
-from telegram_notifier import send_telegram_message, format_telegram_bulletin
+from telegram_notifier import (
+    send_telegram_message, 
+    send_telegram_document, 
+    generate_excel_bulletin, 
+    format_telegram_2h_bulletin
+)
 
 # Page Configuration
 st.set_page_config(
@@ -72,6 +77,19 @@ html, body, [class*="css"] {
     color: #cbd5e1;
     font-size: 14px;
     line-height: 1.6;
+}
+
+/* Date Header Divider */
+.date-section-header {
+    background: linear-gradient(90deg, rgba(99, 102, 241, 0.25) 0%, rgba(15, 23, 42, 0.8) 100%);
+    border-left: 4px solid #6366f1;
+    border-radius: 10px;
+    padding: 10px 18px;
+    margin: 24px 0 16px 0;
+    color: #38bdf8;
+    font-weight: 800;
+    font-size: 18px;
+    letter-spacing: 0.5px;
 }
 
 /* Metric Cards */
@@ -153,6 +171,24 @@ html, body, [class*="css"] {
     border-radius: 20px;
     font-weight: 700;
     font-size: 13px;
+}
+.pill-status-won {
+    background: rgba(16, 185, 129, 0.25);
+    color: #34d399;
+    border: 1px solid #10b981;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: 800;
+    font-size: 12px;
+}
+.pill-status-lost {
+    background: rgba(239, 68, 68, 0.25);
+    color: #f87171;
+    border: 1px solid #ef4444;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: 800;
+    font-size: 12px;
 }
 
 /* Teams Section */
@@ -418,7 +454,7 @@ def parse_time_minutes(time_str: str) -> int:
     return 9999
 
 def load_data(min_o: float, max_o: float):
-    with st.spinner("⚡ Mackolik Canlı Bülteni ve Detaylı Oranlar (MBS, İY 1.5 Üst vb.) taranıyor..."):
+    with st.spinner("⚡ Mackolik 1300+ Maçlık Bülten ve Detaylı Oranlar taranıyor..."):
         try:
             all_m, filt_m = st.session_state.scanner.scan_bulletin(min_o, max_o, fetch_details=True)
             st.session_state.all_matches = all_m
@@ -438,6 +474,13 @@ if st.sidebar.button("🔄 Bülteni Canlı Yenile", use_container_width=True, ty
 
 if not st.session_state.all_matches:
     load_data(min_odds_val, max_odds_val)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📅 Tarih Filtresi")
+
+available_dates = sorted(list(dict.fromkeys(m['date'] for m in st.session_state.filtered_matches if m.get('date'))))
+date_options = ["Tüm Tarihler (1300+ Maç)"] + available_dates
+selected_date = st.sidebar.selectbox("Tarih Seçin", date_options, index=0)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🕒 Sıralama Ayarı")
@@ -472,6 +515,9 @@ st.markdown("""<div class="rule-card">
 # Filter Data according to Sidebar Inputs
 curr_filtered = list(st.session_state.filtered_matches)
 
+if selected_date != "Tüm Tarihler (1300+ Maç)":
+    curr_filtered = [m for m in curr_filtered if m.get('date') == selected_date]
+
 if fav_side_filter == "Ev Sahibi Favori":
     curr_filtered = [m for m in curr_filtered if m['fav_side'] == 'EV SAHİBİ']
 elif fav_side_filter == "Deplasman Favori":
@@ -485,7 +531,7 @@ if search_query:
 
 # Apply Sorting
 if "Maç Saatine Göre" in sort_order:
-    curr_filtered.sort(key=lambda m: parse_time_minutes(m['time']))
+    curr_filtered.sort(key=lambda m: (m.get('date', ''), parse_time_minutes(m['time'])))
 elif "Koda Göre" in sort_order:
     curr_filtered.sort(key=lambda m: m['code'])
 elif "Orana Göre" in sort_order:
@@ -498,21 +544,23 @@ st.sidebar.markdown("### 📱 Telegram Bot Entegrasyonu")
 tg_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_BOT_TOKEN, type="password")
 tg_chat_id = st.sidebar.text_input("Telegram Chat ID", value=DEFAULT_CHAT_ID)
 
-if st.sidebar.button("🚀 Telegram Grubuna Gönder", use_container_width=True, type="primary"):
+if st.sidebar.button("📊 Excel Listesini Telegram'a Gönder", use_container_width=True, type="primary"):
     if not tg_token or not tg_chat_id:
         st.sidebar.error("Lütfen Bot Token ve Chat ID girin.")
     else:
-        with st.spinner("Telegram grubunuza gönderiliyor..."):
-            title = "👑 SULEYMANDO İY 1,5 ÜST CANLI BÜLTENİ"
-            msg_chunks = format_telegram_bulletin(curr_filtered, title)
-            sent_count = 0
-            for chunk in msg_chunks:
-                if send_telegram_message(tg_token, tg_chat_id, chunk):
-                    sent_count += 1
-            if sent_count > 0:
-                st.sidebar.success(f"✅ {len(curr_filtered)} maç Telegram grubunuza gönderildi!")
+        with st.spinner("Excel dosyası oluşturulup Telegram grubuna gönderiliyor..."):
+            excel_bytes = generate_excel_bulletin(curr_filtered, f"Suleymando Bülteni ({selected_date})")
+            caption = (
+                f"👑 <b>SULEYMANDO BÜLTEN EXCEL DOSYASI</b>\n"
+                f"📅 Tarih: <b>{selected_date}</b>\n"
+                f"📊 Eşleşen Maç Sayısı: <b>{len(curr_filtered)}</b>"
+            )
+            filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            ok = send_telegram_document(tg_token, tg_chat_id, excel_bytes, filename, caption)
+            if ok:
+                st.sidebar.success(f"✅ Excel dosyası ({len(curr_filtered)} maç) Telegram grubunuza gönderildi!")
             else:
-                st.sidebar.error("Telegram mesajı gönderilemedi. Chat ID veya Token bilgisini kontrol edin.")
+                st.sidebar.error("Telegram mesajı gönderilemedi.")
 
 if st.session_state.last_updated:
     st.sidebar.caption(f"🕒 Son Güncelleme: **{st.session_state.last_updated}**")
@@ -549,45 +597,60 @@ with col4:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # Tabs View
-tab_cards, tab_table, tab_export = st.tabs(["🎴 Yenilenmiş Hepsi Bir Arada Kartlar", "📊 Tablo Görünümü", "📋 Kuponu Kopyala & İndir"])
+tab_cards, tab_table, tab_export = st.tabs(["🎴 Tarihlere Göre Düzenlenmiş Kartlar", "📊 Tablo Görünümü", "📋 Kuponu Kopyala & Excel İndir"])
 
 with tab_cards:
     if not curr_filtered:
         st.info("Seçilen filtrelere uyan maç bulunamadı.")
     else:
-        for i in range(0, len(curr_filtered), 2):
-            cols = st.columns(2)
-            for idx, col in enumerate(cols):
-                if i + idx < len(curr_filtered):
-                    m = curr_filtered[i + idx]
-                    
-                    is_home_fav = (m['fav_side'] == 'EV SAHİBİ')
-                    is_away_fav = (m['fav_side'] == 'DEPLASMAN')
-                    
-                    home_class = "fav" if is_home_fav else ""
-                    away_class = "fav" if is_away_fav else ""
-                    
-                    mbs_val = m.get('mbs', 1)
-                    iy_1_5_u_odd = m.get('iy_1_5_ust')
-                    iy_1_5_u_str = f"{iy_1_5_u_odd:.2f}" if iy_1_5_u_odd else "N/A"
-                    
-                    if is_home_fav:
-                        fav_gol_odd = m.get('ev_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('ev_0_5_ust')
-                        extra_odd = m.get('iy_ms_2_1')
-                    else:
-                        fav_gol_odd = m.get('dep_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('dep_0_5_ust')
-                        extra_odd = m.get('iy_ms_1_x')
+        # Group matches by Date
+        dates_in_curr = list(dict.fromkeys(m.get('date', 'Tarih Belirtilmemiş') for m in curr_filtered))
+        
+        for d_str in dates_in_curr:
+            date_matches = [m for m in curr_filtered if m.get('date') == d_str]
+            st.markdown(f"""<div class="date-section-header">📅 {d_str} ({len(date_matches)} Maç)</div>""", unsafe_allow_html=True)
+            
+            for i in range(0, len(date_matches), 2):
+                cols = st.columns(2)
+                for idx, col in enumerate(cols):
+                    if i + idx < len(date_matches):
+                        m = date_matches[i + idx]
                         
-                    fav_gol_str = f"{fav_gol_odd:.2f}" if fav_gol_odd else "N/A"
-                    extra_odd_str = f"{extra_odd:.2f}" if extra_odd else "N/A"
-                    
-                    card_html = f"""<div class="nextgen-card">
+                        is_home_fav = (m['fav_side'] == 'EV SAHİBİ')
+                        is_away_fav = (m['fav_side'] == 'DEPLASMAN')
+                        
+                        home_class = "fav" if is_home_fav else ""
+                        away_class = "fav" if is_away_fav else ""
+                        
+                        mbs_val = m.get('mbs', 1)
+                        iy_1_5_u_odd = m.get('iy_1_5_ust')
+                        iy_1_5_u_str = f"{iy_1_5_u_odd:.2f}" if iy_1_5_u_odd else "N/A"
+                        
+                        if is_home_fav:
+                            fav_gol_odd = m.get('ev_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('ev_0_5_ust')
+                            extra_odd = m.get('iy_ms_2_1')
+                        else:
+                            fav_gol_odd = m.get('dep_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('dep_0_5_ust')
+                            extra_odd = m.get('iy_ms_1_x')
+                            
+                        fav_gol_str = f"{fav_gol_odd:.2f}" if fav_gol_odd else "N/A"
+                        extra_odd_str = f"{extra_odd:.2f}" if extra_odd else "N/A"
+                        
+                        status_val = m.get('iy_1_5_status', 'OYNANMADI')
+                        if status_val == 'TUTTU':
+                            status_badge = f'<span class="pill-status-won">✅ İY {m.get("iy_score","")} (TUTTU)</span>'
+                        elif status_val == 'YATTI':
+                            status_badge = f'<span class="pill-status-lost">❌ İY {m.get("iy_score","")} (YATTI)</span>'
+                        else:
+                            status_badge = f'<span class="pill-time">⏰ SAAT: {m["time"]}</span>'
+                        
+                        card_html = f"""<div class="nextgen-card">
 <div class="card-top-bar">
 <div>
 <span class="pill-mbs">🎯 MBS: {mbs_val}</span>
 <span class="pill-code">📌 KOD: {m['code']}</span>
 </div>
-<span class="pill-time">⏰ SAAT: {m['time']}</span>
+{status_badge}
 </div>
 <div class="teams-flex">
 <div class="team-card {home_class}">
@@ -639,10 +702,10 @@ with tab_cards:
 </div>
 </div>
 </div>"""
-                    col.markdown(card_html, unsafe_allow_html=True)
-                    
-                    with col.expander(f"🔍 [{m['code']}] {m['home']} - {m['away']} Tüm İddaa Oranları"):
-                        exp_html = f"""<div class="expander-grid">
+                        col.markdown(card_html, unsafe_allow_html=True)
+                        
+                        with col.expander(f"🔍 [{m['code']}] {m['home']} - {m['away']} Tüm İddaa Oranları"):
+                            exp_html = f"""<div class="expander-grid">
 <div class="exp-card">
 <div class="exp-title">1. YARI SONUCU</div>
 <div class="exp-row"><span>İY 1:</span> <strong class="exp-val">{m.get('iy_1') or 'N/A'}</strong></div>
@@ -660,14 +723,14 @@ with tab_cards:
 <div class="exp-row"><span>Dep İki Yarı Gol:</span> <strong class="exp-val">{m.get('dep_iki_yari_gol') or 'N/A'}</strong></div>
 </div>
 </div>"""
-                        st.markdown(exp_html, unsafe_allow_html=True)
+                            st.markdown(exp_html, unsafe_allow_html=True)
 
 with tab_table:
     if curr_filtered:
         df = pd.DataFrame(curr_filtered)
-        cols_order = ['time', 'code', 'mbs', 'home', 'away', 'ms1', 'msx', 'ms2', 'iy_1_5_ust', 'fav_side', 'fav_odds', 'primary_prediction', 'extra_prediction']
+        cols_order = ['date', 'time', 'code', 'mbs', 'home', 'away', 'ms1', 'msx', 'ms2', 'iy_1_5_ust', 'fav_side', 'fav_odds', 'primary_prediction', 'extra_prediction', 'iy_score', 'iy_1_5_status']
         df_display = df[[c for c in cols_order if c in df.columns]]
-        df_display.columns = ['Saat', 'Kod', 'MBS', 'Ev Sahibi', 'Deplasman', 'MS 1', 'MS X', 'MS 2', 'İY 1.5 Üst Oran', 'Favori Taraf', 'Favori Oran', 'Ana Tahmin', 'Ekstra Tahmin']
+        df_display.columns = ['Tarih', 'Saat', 'Kod', 'MBS', 'Ev Sahibi', 'Deplasman', 'MS 1', 'MS X', 'MS 2', 'İY 1.5 Üst Oran', 'Favori Taraf', 'Favori Oran', 'Ana Tahmin', 'Ekstra Tahmin', 'İY Skor', 'İY 1.5 Durum']
         
         st.dataframe(
             df_display,
@@ -688,25 +751,34 @@ with tab_export:
         ]
         for idx, m in enumerate(curr_filtered, 1):
             iy_ust_str = f"{m.get('iy_1_5_ust'):.2f}" if m.get('iy_1_5_ust') else "N/A"
+            status_tag = f" -> [{m.get('iy_1_5_status')}]" if m.get('iy_1_5_status') != 'OYNANMADI' else ""
             coupon_lines.append(
-                f"{idx}. ⏰ {m['time']} | [MBS: {m.get('mbs',1)}] [{m['code']}] {m['home']} - {m['away']} "
+                f"{idx}. 📅 {m.get('date','')} ⏰ {m['time']} | [MBS: {m.get('mbs',1)}] [{m['code']}] {m['home']} - {m['away']} "
                 f"(Fav: {m['fav_side']} {m['fav_odds']:.2f}) "
-                f"-> 🔥 Tahmin: İY 1.5 ÜST (Oran: {iy_ust_str}) | 🎯 Ekstra: {m['extra_prediction']}"
+                f"-> 🔥 Tahmin: İY 1.5 ÜST (Oran: {iy_ust_str}) | 🎯 Ekstra: {m['extra_prediction']}{status_tag}"
             )
             
         coupon_text = "\n".join(coupon_lines)
         
         st.text_area("Tek Tıkla Kopyala", coupon_text, height=320)
         
-        df = pd.DataFrame(curr_filtered)
-        csv_data = df.to_csv(index=False).encode('utf-8-sig')
-        
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
+            excel_data = generate_excel_bulletin(curr_filtered, f"Suleymando_{selected_date}")
+            st.download_button(
+                label="📥 Excel (.xlsx) Olarak İndir",
+                data=excel_data,
+                file_name=f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        with col_dl2:
+            df = pd.DataFrame(curr_filtered)
+            csv_data = df.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label="📥 CSV Olarak İndir",
                 data=csv_data,
-                file_name=f"suleymando_maci_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                file_name=f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
                 use_container_width=True
             )

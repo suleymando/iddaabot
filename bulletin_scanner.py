@@ -1,7 +1,7 @@
 import urllib.request
 import re
-import json
 import datetime
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -10,7 +10,7 @@ MACKOLIK_FALLBACK_URL = "https://arsiv.mackolik.com/Iddaa-Programi"
 
 class BulletinScanner:
     """
-    Mackolik İddaa Bülteni Tarayıcı, Detaylı Oran Çekici ve Suleymando Filtre Motoru
+    Mackolik İddaa Bülteni Tarayıcı, Detaylı Oran Çekici, Tarih İzleyici ve Suleymando Filtre Motoru
     """
     def __init__(self, url: str = MACKOLIK_URL):
         self.url = url
@@ -38,38 +38,70 @@ class BulletinScanner:
             return raw_bytes.decode('utf-8', errors='ignore')
 
     def parse_matches(self, html: str) -> List[Dict[str, Any]]:
-        rows = re.findall(r'<tr[^>]*>(?:(?!</tr>).)*?popMatch(?:(?!</tr>).)*?</tr>', html, re.DOTALL | re.IGNORECASE)
+        # Split HTML into tr blocks to accurately track Date headers and match rows
+        tr_blocks = re.findall(r'<tr[^>]*>.*?</tr>', html, re.DOTALL | re.IGNORECASE)
         
         parsed_matches = []
         seen_keys = set()
+        current_date = datetime.datetime.now().strftime("%d.%m.%Y")
         
-        for r in rows:
+        for tr in tr_blocks:
+            # Detect Date Header row
+            date_m = re.search(r'(\d{2}\.\d{2}\.\d{4})', tr)
+            if 'popMatch' not in tr and date_m:
+                current_date = date_m.group(1)
+                continue
+                
+            if 'popMatch' not in tr:
+                continue
+                
             # Match ID (for getMoreBets AJAX)
-            mac_id_m = re.search(r'popMatch\((\d+)', r)
+            mac_id_m = re.search(r'popMatch\((\d+)', tr)
             match_id = mac_id_m.group(1) if mac_id_m else ""
             
             # Takım İsimleri
-            teams = re.findall(r'popTeam\(\d+\)[^>]*>\s*([^<]+)', r)
+            teams = re.findall(r'popTeam\(\d+\)[^>]*>\s*([^<]+)', tr)
             if len(teams) < 2:
                 continue
             home_team = teams[0].replace('&nbsp;', ' ').strip()
             away_team = teams[1].replace('&nbsp;', ' ').strip()
             
             # Maç Saati
-            time_m = re.search(r'<td[^>]*align=["\']center["\'][^>]*>(\d{2}:\d{2})</td>', r)
+            time_m = re.search(r'<td[^>]*align=["\']center["\'][^>]*>(\d{2}:\d{2})</td>', tr)
             match_time = time_m.group(1) if time_m else "--:--"
             
             # Maç Kodu
-            code_m = re.search(r'<td[^>]*align=["\']center["\'][^>]*>(\d{4,6})</td>', r)
+            code_m = re.search(r'<td[^>]*align=["\']center["\'][^>]*>(\d{4,6})</td>', tr)
             code = code_m.group(1) if code_m else "------"
             
-            match_key = f"{code}_{home_team}_{away_team}"
+            # Extract İY (First Half) & MS (Full Time) Scores if played/completed
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
+            score_cells = [t.strip() for t in tds if re.match(r'^\d+-\d+$', t.strip())]
+            
+            iy_score = score_cells[0] if len(score_cells) > 0 else ""
+            ms_score = score_cells[1] if len(score_cells) > 1 else ""
+            
+            iy_goals = -1
+            iy_1_5_status = "OYNANMADI"
+            
+            if iy_score:
+                try:
+                    hp, ap = map(int, iy_score.split('-'))
+                    iy_goals = hp + ap
+                    if iy_goals >= 2:
+                        iy_1_5_status = "TUTTU"
+                    else:
+                        iy_1_5_status = "YATTI"
+                except Exception:
+                    pass
+                    
+            match_key = f"{current_date}_{code}_{home_team}_{away_team}"
             if match_key in seen_keys:
                 continue
             seen_keys.add(match_key)
             
             # Oranlar (MS1, MSX, MS2)
-            dialogs = re.findall(r'openOddsDialog\((.*?)\)', r)
+            dialogs = re.findall(r'openOddsDialog\((.*?)\)', tr)
             ms1, msx, ms2 = 0.0, 0.0, 0.0
             found_ms = False
             
@@ -93,13 +125,18 @@ class BulletinScanner:
                 
             parsed_matches.append({
                 'match_id': match_id,
+                'date': current_date,
                 'code': code,
                 'time': match_time,
                 'home': home_team,
                 'away': away_team,
                 'ms1': ms1,
                 'msx': msx,
-                'ms2': ms2
+                'ms2': ms2,
+                'iy_score': iy_score,
+                'ms_score': ms_score,
+                'iy_goals': iy_goals,
+                'iy_1_5_status': iy_1_5_status
             })
             
         return parsed_matches
@@ -111,21 +148,20 @@ class BulletinScanner:
         if not match_id:
             return {}
             
-        ajax_url = f"https://arsiv.mackolik.com/AjaxHandlers/IddaaHandler.aspx?command=morebets&mac={match_id}&type=ByLeague"
+        url = f"https://arsiv.mackolik.com/AjaxHandlers/IddaaHandler.aspx?command=morebets&mac={match_id}&type=ByLeague"
         try:
-            req = urllib.request.Request(ajax_url, headers=self.headers)
-            raw_bytes = urllib.request.urlopen(req, timeout=5).read()
-            text = raw_bytes.decode('windows-1254', errors='ignore')
+            req = urllib.request.Request(url, headers=self.headers)
+            raw_text = urllib.request.urlopen(req, timeout=8).read().decode('utf-8', errors='ignore')
             
-            clean_json = re.sub(r'([{,])\s*([a-zA-Z0-9_]+)\s*:', r'\1"\2":', text)
-            clean_json = re.sub(r'"\\/Date\([^)]+\)\\/"', '""', clean_json)
-            data = json.loads(clean_json)
+            json_text = re.sub(r'([{,])\s*([a-zA-Z0-9_]+)\s*:', r'\1"\2":', raw_text)
+            json_text = re.sub(r'/Date\((\d+)\)/', r'\1', json_text)
             
+            data = json.loads(json_text)
             event = data.get('Event', {})
-            markets = event.get('Markets', [])
+            markets = event.get('m', [])
             
-            detailed = {
-                'mbs': 1,
+            details = {
+                'mbs': event.get('mbs', 1),
                 'iy_1_5_ust': None,
                 'iy_1_5_alt': None,
                 'iy_0_5_ust': None,
@@ -137,69 +173,76 @@ class BulletinScanner:
                 'ms_2_5_ust': None,
                 'kg_var': None,
                 'ev_iki_yari_gol': None,
-                'dep_iki_yari_gol': None
+                'dep_iki_yari_gol': None,
+                'ev_0_5_ust': None,
+                'dep_0_5_ust': None
             }
             
             for m in markets:
-                mtype = m.get('MarketType', {})
-                mid = mtype.get('Id')
-                mname = mtype.get('Name') or m.get('Name') or ""
+                mid = m.get('id')
+                o_str = m.get('o', '')
+                items = o_str.split('|') if o_str else []
                 
-                mbs_val = m.get('MBS')
-                if mbs_val and mbs_val > detailed['mbs']:
-                    detailed['mbs'] = mbs_val
-                    
-                outcomes = m.get('Outcomes', [])
-                outs = {}
-                alt_odd = None
-                ust_odd = None
-                
-                for o in outcomes:
-                    oname = str(o.get('OutcomeName') or '')
-                    odd = o.get('Odd')
-                    outs[oname] = odd
-                    if 'st' in oname.lower() or o.get('OutcomeNo') == 2:
-                        ust_odd = odd
-                    elif 'lt' in oname.lower() or o.get('OutcomeNo') == 1:
-                        alt_odd = odd
-                
-                # Market ID 14: 1. Yarı 1,5 Alt/Üst
-                if mid == 14 or '1. Yarı 1,5' in mname:
-                    detailed['iy_1_5_ust'] = ust_odd
-                    detailed['iy_1_5_alt'] = alt_odd
-                    
-                # Market ID 209: 1. Yarı 0,5 Alt/Üst
-                elif mid == 209 or '1. Yarı 0,5' in mname:
-                    detailed['iy_0_5_ust'] = ust_odd
-                    
-                # Market ID 5: İlk Yarı/Maç Sonucu
-                elif mid == 5 or 'İlk Yarı/Maç Sonucu' in mname:
-                    detailed['iy_ms_2_1'] = outs.get('2/1')
-                    detailed['iy_ms_1_x'] = outs.get('1/X')
-                    
-                # Market ID 7: 1. Yarı Sonucu
-                elif mid == 7 or '1. Yarı Sonucu' in mname:
-                    detailed['iy_1'] = outs.get('1')
-                    detailed['iy_x'] = outs.get('X')
-                    detailed['iy_2'] = outs.get('2')
-                    
-                # Market ID 12: 2,5 Alt/Üst
-                elif mid == 12 or '2,5 Alt/Üst' in mname:
-                    detailed['ms_2_5_ust'] = ust_odd
-                    
-                # Market ID 38: Karşılıklı Gol
-                elif mid == 38 or 'Karşılıklı Gol' in mname:
-                    detailed['kg_var'] = outs.get('Var')
-                    
-                # Evsahibi İki Yarıda da Gol
-                elif mid == 295 or 'Evsahibi İki Yarıda da Gol' in mname:
-                    detailed['ev_iki_yari_gol'] = outs.get('Atar')
-                    
-                # Deplasman İki Yarıda da Gol
-                elif mid == 296 or 'Deplasman İki Yarıda da Gol' in mname:
-                    detailed['dep_iki_yari_gol'] = outs.get('Atar')
-                    
-            return detailed
+                # 14: 1. Yarı 1.5 Alt/Üst
+                if mid == 14 and len(items) >= 2:
+                    try:
+                        details['iy_1_5_alt'] = float(items[0]) if items[0] and items[0] != '0' else None
+                        details['iy_1_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
+                    except Exception:
+                        pass
+                # 5: İY/MS
+                elif mid == 5:
+                    for item in items:
+                        parts = item.split(':')
+                        if len(parts) == 2:
+                            o_id, val = parts[0], parts[1]
+                            try:
+                                v_float = float(val) if val and val != '0' else None
+                                if o_id == '15': # 2/1
+                                    details['iy_ms_2_1'] = v_float
+                                elif o_id == '7': # 1/X
+                                    details['iy_ms_1_x'] = v_float
+                            except Exception:
+                                pass
+                # 7: 1. Yarı Sonucu
+                elif mid == 7 and len(items) >= 3:
+                    try:
+                        details['iy_1'] = float(items[0]) if items[0] and items[0] != '0' else None
+                        details['iy_x'] = float(items[1]) if items[1] and items[1] != '0' else None
+                        details['iy_2'] = float(items[2]) if items[2] and items[2] != '0' else None
+                    except Exception:
+                        pass
+                # 12: 2,5 Gol Alt/Üst
+                elif mid == 12 and len(items) >= 2:
+                    try:
+                        details['ms_2_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
+                    except Exception:
+                        pass
+                # 38: Karşılıklı Gol
+                elif mid == 38 and len(items) >= 2:
+                    try:
+                        details['kg_var'] = float(items[0]) if items[0] and items[0] != '0' else None
+                    except Exception:
+                        pass
+                # 209: 1. Yarı 0,5 Alt/Üst
+                elif mid == 209 and len(items) >= 2:
+                    try:
+                        details['iy_0_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
+                    except Exception:
+                        pass
+                # 295/296: Ev/Dep İki Yarıda Gol
+                elif mid == 295 and len(items) >= 1:
+                    try:
+                        details['ev_iki_yari_gol'] = float(items[0]) if items[0] and items[0] != '0' else None
+                    except Exception:
+                        pass
+                elif mid == 296 and len(items) >= 1:
+                    try:
+                        details['dep_iki_yari_gol'] = float(items[0]) if items[0] and items[0] != '0' else None
+                    except Exception:
+                        pass
+                        
+            return details
         except Exception:
             return {}
 
@@ -221,31 +264,35 @@ class BulletinScanner:
     ) -> List[Dict[str, Any]]:
         filtered = []
         for m in matches:
-            o1, ox, o2 = m['ms1'], m['msx'], m['ms2']
+            ms1, ms2 = m['ms1'], m['ms2']
+            fav_side = None
+            fav_odds = 0.0
             
-            fav_home = (min_odds <= o1 <= max_odds)
-            fav_away = (min_odds <= o2 <= max_odds)
-            
-            if fav_home or fav_away:
-                item = dict(m)
-                fav_side = 'EV SAHİBİ' if fav_home else 'DEPLASMAN'
-                fav_team = m['home'] if fav_home else m['away']
-                fav_odds = o1 if fav_home else o2
+            if 0 < ms1 <= max_odds and ms1 >= min_odds:
+                fav_side = "EV SAHİBİ"
+                fav_odds = ms1
+            elif 0 < ms2 <= max_odds and ms2 >= min_odds:
+                fav_side = "DEPLASMAN"
+                fav_odds = ms2
                 
-                item['fav_side'] = fav_side
-                item['fav_team'] = fav_team
-                item['fav_odds'] = fav_odds
-                item['primary_prediction'] = 'İY 1,5 ÜST'
-                item['extra_prediction'] = '2/1 (İY 2 / MS 1)' if fav_home else '1/X (İY 1 / MS X)'
+            if fav_side:
+                m_copy = dict(m)
+                m_copy['fav_side'] = fav_side
+                m_copy['fav_odds'] = fav_odds
+                m_copy['primary_prediction'] = "İY 1,5 ÜST"
                 
-                filtered.append(item)
+                if fav_side == "EV SAHİBİ":
+                    m_copy['extra_prediction'] = "2/1 (İY 2 / MS 1)"
+                else:
+                    m_copy['extra_prediction'] = "1/X (İY 1 / MS X)"
+                    
+                filtered.append(m_copy)
                 
-        # Detaylı oranları paralel (ThreadPoolExecutor) olarak saniyeler içinde çekelim
         if fetch_details and filtered:
-            with ThreadPoolExecutor(max_workers=12) as executor:
+            with ThreadPoolExecutor(max_workers=10) as executor:
                 future_to_match = {
                     executor.submit(self.fetch_detailed_odds, m['match_id']): m 
-                    for m in filtered
+                    for m in filtered if m.get('match_id')
                 }
                 for future in as_completed(future_to_match):
                     match_item = future_to_match[future]
@@ -257,17 +304,18 @@ class BulletinScanner:
                         
         return filtered
 
-    def scan_bulletin(self, min_odds: float = 1.00, max_odds: float = 1.23, fetch_details: bool = True) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def scan_bulletin(
+        self, 
+        min_odds: float = 1.00, 
+        max_odds: float = 1.23,
+        fetch_details: bool = True
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         html = self.fetch_bulletin_html()
         all_matches = self.parse_matches(html)
-        filtered_matches = self.apply_contexticardici_filter(all_matches, min_odds, max_odds, fetch_details)
+        filtered_matches = self.apply_suleymando_filter(all_matches, min_odds, max_odds, fetch_details)
         return all_matches, filtered_matches
 
 if __name__ == '__main__':
     scanner = BulletinScanner()
-    print("Bülten ve detaylı oranlar taranıyor...")
-    all_m, filt_m = scanner.scan_bulletin(fetch_details=True)
-    print(f"Toplam Taranan Maç: {len(all_m)}")
-    print(f"Filtreye Uyan Maç Sayısı: {len(filt_m)}")
-    for f in filt_m[:3]:
-        print("\nMAÇ DETAYI:", f)
+    all_m, filt_m = scanner.scan_bulletin(1.00, 1.23, fetch_details=False)
+    print(f"Scanned {len(all_m)} total matches, Matched {len(filt_m)} matches.")

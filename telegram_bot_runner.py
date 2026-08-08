@@ -6,7 +6,13 @@ import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 from bulletin_scanner import BulletinScanner
-from telegram_notifier import send_telegram_message, format_telegram_bulletin
+from telegram_notifier import (
+    send_telegram_message, 
+    send_telegram_document, 
+    generate_excel_bulletin, 
+    format_telegram_2h_bulletin,
+    format_telegram_winrate_report
+)
 
 BOT_TOKEN = "8940991344:AAFA8qLKgNDdsp__3KThdtnMSXhh2VrrcI4"
 CHAT_ID = "-5202583497"
@@ -25,29 +31,47 @@ def parse_time_minutes(time_str: str) -> int:
         pass
     return 9999
 
-def run_bot_scan(mode="every_4h"):
+def run_bot_scan(mode="every_2h"):
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    today_date_str = datetime.datetime.now().strftime("%d.%m.%Y")
     print(f"[{now_str}] Telegram Tarama Başlatılıyor... Mod: {mode}")
     
     try:
         all_m, filt_m = scanner.scan_bulletin(min_odds=1.00, max_odds=1.23, fetch_details=True)
-        filt_m.sort(key=lambda m: parse_time_minutes(m['time']))
+        filt_m.sort(key=lambda m: (m.get('date', ''), parse_time_minutes(m['time'])))
         
         if mode == "night_2345":
-            title = "🌙 SULEYMANDO GECE 23:45 TÜM BÜLTEN TARAMASI"
-            target_matches = filt_m
+            # 23:45 GÜN SONU BAŞARI KONTROLÜ VE EXCEL GÖNDERİMİ
+            today_matches = [m for m in filt_m if m.get('date') == today_date_str]
+            if not today_matches:
+                today_matches = filt_m # Fallback
+                
+            report_text = format_telegram_winrate_report(today_matches, today_date_str)
+            excel_bytes = generate_excel_bulletin(filt_m, f"Suleymando_GunSonu_{today_date_str}")
+            
+            # Send Victory Report Text
+            send_telegram_message(BOT_TOKEN, CHAT_ID, report_text)
+            
+            # Send Excel File Document
+            filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            caption = f"📊 Suleymando {today_date_str} Tüm Bülten ve İY Doğrulama Raporu (.xlsx)"
+            ok = send_telegram_document(BOT_TOKEN, CHAT_ID, excel_bytes, filename, caption)
+            print(f"[{now_str}] Gece 23:45 Excel Gönderim Durumu: {ok}")
+            
         else:
-            title = "⏳ SULEYMANDO YAKLAŞAN 4 SAATLİK BÜLTEN TARAMASI"
+            # ÖNÜMÜZDEKİ 2 SAAT İÇİNDE BAŞLAYACAK MAÇLAR
             now_minutes = datetime.datetime.now().hour * 60 + datetime.datetime.now().minute
-            max_target_minutes = now_minutes + (4 * 60)
+            max_target_minutes = now_minutes + (2 * 60)
             
-            window_matches = [m for m in filt_m if now_minutes <= parse_time_minutes(m['time']) <= max_target_minutes]
-            target_matches = window_matches if window_matches else filt_m[:5]
+            # Filter today's upcoming 2 hours matches
+            upcoming_2h_matches = [
+                m for m in filt_m 
+                if m.get('date') == today_date_str and now_minutes <= parse_time_minutes(m['time']) <= max_target_minutes
+            ]
             
-        msgs = format_telegram_bulletin(target_matches, title)
-        for chunk in msgs:
-            ok = send_telegram_message(BOT_TOKEN, CHAT_ID, chunk)
-            print(f"[{now_str}] Mesaj Gönderim Durumu: {ok}")
+            msg_text = format_telegram_2h_bulletin(upcoming_2h_matches)
+            ok = send_telegram_message(BOT_TOKEN, CHAT_ID, msg_text)
+            print(f"[{now_str}] 2 Saatlik Bildirim Gönderim Durumu: {ok} (Maç Sayısı: {len(upcoming_2h_matches)})")
             
     except Exception as e:
         print(f"[{now_str}] Tarama Hatası: {e}")
@@ -56,25 +80,25 @@ if __name__ == "__main__":
     print("🤖 Suleymando Telegram Otomatik Bot Servisi Başlatıldı...")
     print(f"🎯 Hedef Grup Chat ID: {CHAT_ID}")
     
-    # İlk çalıştırmada hemen 1 tarama yapıp Telegram'a atalım
-    run_bot_scan(mode="every_4h")
+    # İlk çalıştırmada 2 saatlik yaklaşan maç taraması
+    run_bot_scan(mode="every_2h")
     
     last_night_scan_date = None
-    last_4h_scan_time = time.time()
+    last_2h_scan_time = time.time()
     
     while True:
         now = datetime.datetime.now()
         
-        # 1. Gece 23:45 Taraması Kontrolü
+        # 1. Gece 23:45 Gün Sonu Başarı Raporu & Excel Gönderimi
         if now.hour == 23 and now.minute == 45 and last_night_scan_date != now.date():
-            print("🌙 Gece 23:45 Zamanlayıcısı Tetiklendi!")
+            print("🌙 Gece 23:45 Gün Sonu Zamanlayıcısı Tetiklendi!")
             run_bot_scan(mode="night_2345")
             last_night_scan_date = now.date()
             
-        # 2. Her 4 Saatte Bir Periodik Tarama (14400 saniye)
-        if time.time() - last_4h_scan_time >= 14400:
-            print("⏳ 4 Saatlik Periyodik Zamanlayıcı Tetiklendi!")
-            run_bot_scan(mode="every_4h")
-            last_4h_scan_time = time.time()
+        # 2. Her 2 Saatte Bir Yaklaşan Maç Uyarısı (7200 saniye)
+        if time.time() - last_2h_scan_time >= 7200:
+            print("⏳ 2 Saatlik Periyodik Zamanlayıcı Tetiklendi!")
+            run_bot_scan(mode="every_2h")
+            last_2h_scan_time = time.time()
             
         time.sleep(30)
