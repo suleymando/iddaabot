@@ -15,7 +15,8 @@ from telegram_notifier import (
     send_matches_individually,
     check_and_update_won_matches,
     send_daily_parlay_coupon,
-    generate_daily_parlay_coupon
+    generate_daily_parlay_coupon,
+    filter_upcoming_not_started_matches
 )
 
 # Page Configuration
@@ -47,13 +48,7 @@ def run_cloud_telegram_scan(mode="every_2h"):
             filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv"
             send_telegram_document(DEFAULT_BOT_TOKEN, DEFAULT_CHAT_ID, csv_bytes, filename, f"📊 Suleymando {today_date_str} Bülten (.csv)")
         else:
-            now_minutes = datetime.datetime.now().hour * 60 + datetime.datetime.now().minute
-            max_target_minutes = now_minutes + (2 * 60)
-            
-            upcoming = [
-                m for m in filt_m 
-                if m.get('date') == today_date_str and now_minutes <= parse_time_minutes(m['time']) <= max_target_minutes
-            ]
+            upcoming = filter_upcoming_not_started_matches(filt_m, window_hours=2)
             msg_text = format_telegram_2h_bulletin(upcoming)
             send_telegram_message(DEFAULT_BOT_TOKEN, DEFAULT_CHAT_ID, msg_text)
     except Exception as e:
@@ -587,19 +582,13 @@ if st.sidebar.button("📱 Maçları Tek Tek Telegram'a Gönder", use_container_
     else:
         import datetime as _dt
         _now = _dt.datetime.now()
-        _now_min = _now.hour * 60 + _now.minute
-        _max_min = _now_min + 8 * 60
-        _today_str = _now.strftime("%d.%m.%Y")
-        next_8h = [
-            m for m in curr_filtered
-            if m.get('date') == _today_str
-            and _now_min <= parse_time_minutes(m['time']) <= _max_min
-        ]
-        # Bugün maç yoksa tüm filtrelenmiş listeyi gönder
-        target = next_8h if next_8h else curr_filtered
-        window_label = f"önümüzdeki 8 saat ({len(target)} maç)" if next_8h else f"tüm liste ({len(target)} maç)"
+        target = filter_upcoming_not_started_matches(curr_filtered, window_hours=8, now=_now)
+        window_label = f"önümüzdeki 8 saat ({len(target)} maç)"
+        if not target:
+            st.sidebar.warning("Önümüzdeki 8 saat içinde başlamamış ve formüle uyan maç bulunamadı.")
+            st.stop()
         with st.spinner(f"📱 {window_label} Telegram'a gönderiliyor..."):
-            res = send_matches_individually(tg_token, tg_chat_id, target)
+            res = send_matches_individually(tg_token, tg_chat_id, target, window_hours=8)
             st.sidebar.success(f"✅ {res['sent']} maç gönderildi, {res['skipped']} zaten gönderilmişti ({window_label})")
 
 

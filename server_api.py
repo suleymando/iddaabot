@@ -12,7 +12,8 @@ from telegram_notifier import (
     generate_csv_bulletin,
     send_telegram_document,
     send_daily_parlay_coupon,
-    send_short_term_coupon
+    send_short_term_coupon,
+    filter_upcoming_not_started_matches
 )
 
 app = FastAPI(
@@ -60,15 +61,7 @@ def scan_bulletin(
     filt_m.sort(key=lambda m: parse_time_minutes(m['time']))
     
     if hours and hours > 0:
-        now_minutes = datetime.datetime.now().hour * 60 + datetime.datetime.now().minute
-        max_target_minutes = now_minutes + (hours * 60)
-        
-        window_filtered = []
-        for m in filt_m:
-            tm = parse_time_minutes(m['time'])
-            if now_minutes <= tm <= max_target_minutes:
-                window_filtered.append(m)
-        filt_m = window_filtered
+        filt_m = filter_upcoming_not_started_matches(filt_m, window_hours=hours)
 
     return {
         "total_scanned": len(all_m),
@@ -126,13 +119,9 @@ def trigger_telegram(payload: TelegramTriggerRequest):
         
         return {"status": "success", "mode": mode, "total_matched": len(filt_m)}
     else:
-        now_minutes = datetime.datetime.now().hour * 60 + datetime.datetime.now().minute
-        max_target_minutes = now_minutes + (4 * 60)
+        target_matches = filter_upcoming_not_started_matches(filt_m, window_hours=8)
         
-        window_matches = [m for m in filt_m if now_minutes <= parse_time_minutes(m['time']) <= max_target_minutes]
-        target_matches = window_matches if window_matches else filt_m[:5]
-        
-        send_res = send_matches_individually(bot_token, chat_id, target_matches)
+        send_res = send_matches_individually(bot_token, chat_id, target_matches, window_hours=8)
         
         # Check and update scores as well
         check_and_update_won_matches(bot_token, chat_id, filt_m)

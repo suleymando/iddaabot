@@ -15,7 +15,8 @@ from telegram_notifier import (
     send_matches_individually,
     check_and_update_won_matches,
     send_daily_parlay_coupon,
-    send_short_term_coupon
+    send_short_term_coupon,
+    filter_upcoming_not_started_matches
 )
 
 BOT_TOKEN = "8940991344:AAFA8qLKgNDdsp__3KThdtnMSXhh2VrrcI4"
@@ -88,15 +89,8 @@ def run_bot_scan(mode="every_2h"):
             
         # ── Mod: Her 2 Saatte Bir Yaklaşan Maç Bildirimi ────────────────────
         else:
-            now_minutes = datetime.datetime.now().hour * 60 + datetime.datetime.now().minute
-            max_target_minutes = now_minutes + (2 * 60)
-            
-            upcoming_2h_matches = [
-                m for m in filt_m 
-                if m.get('date') == today_date_str and now_minutes <= parse_time_minutes(m['time']) <= max_target_minutes
-            ]
-            
-            res = send_matches_individually(BOT_TOKEN, CHAT_ID, upcoming_2h_matches if upcoming_2h_matches else filt_m[:5])
+            upcoming_8h_matches = filter_upcoming_not_started_matches(filt_m, window_hours=8)
+            res = send_matches_individually(BOT_TOKEN, CHAT_ID, upcoming_8h_matches, window_hours=8)
             print(f"[{now_str}] 📱 Tek tek maç gönderim: {res}")
             
     except Exception as e:

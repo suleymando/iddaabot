@@ -290,25 +290,54 @@ def _parse_time_minutes(time_str: str) -> int:
     except Exception:
         return 9999
 
+def parse_match_datetime(match: dict, now: Optional[datetime.datetime] = None) -> Optional[datetime.datetime]:
+    now = now or datetime.datetime.now()
+    date_str = str(match.get('date') or now.strftime("%d.%m.%Y")).strip()
+    time_str = str(match.get('time') or "").strip()
+
+    try:
+        return datetime.datetime.strptime(f"{date_str} {time_str}", "%d.%m.%Y %H:%M")
+    except Exception:
+        return None
+
+def is_match_not_started(match: dict, now: Optional[datetime.datetime] = None) -> bool:
+    now = now or datetime.datetime.now()
+    match_dt = parse_match_datetime(match, now)
+    if not match_dt or match_dt <= now:
+        return False
+
+    status = str(match.get('iy_1_5_status') or 'OYNANMADI').upper()
+    if status != 'OYNANMADI':
+        return False
+
+    if str(match.get('iy_score') or '').strip():
+        return False
+
+    return True
+
+def filter_upcoming_not_started_matches(
+    matches: list,
+    window_hours: int = 8,
+    now: Optional[datetime.datetime] = None
+) -> list:
+    now = now or datetime.datetime.now()
+    window_end = now + datetime.timedelta(hours=window_hours)
+
+    return [
+        m for m in matches
+        if is_match_not_started(m, now)
+        and (match_dt := parse_match_datetime(m, now)) is not None
+        and match_dt <= window_end
+    ]
+
 def generate_short_term_coupon(matches: list, window_hours: int = 3, coupon_size: int = 3) -> Dict[str, Any]:
     """
     Önümüzdeki `window_hours` saat içinde başlayacak maçlardan en iyi 3'ünü seçer
     ve 'Kısa Vade Kuponu' oluşturur.
     """
     now = datetime.datetime.now()
-    now_minutes = now.hour * 60 + now.minute
-    max_minutes = now_minutes + (window_hours * 60)
-
-    # Penceredeki geçerli maçları filtrele
-    window_matches = [
-        m for m in matches
-        if m.get('iy_1_5_ust') and
-           now_minutes <= _parse_time_minutes(m.get('time', '99:99')) <= max_minutes
-    ]
-
-    # Yeterli maç yoksa pencereyi biraz genişlet (fallback)
-    if len(window_matches) < coupon_size:
-        window_matches = [m for m in matches if m.get('iy_1_5_ust')]
+    window_matches = [m for m in matches if m.get('iy_1_5_ust')]
+    window_matches = filter_upcoming_not_started_matches(window_matches, window_hours, now)
 
     selected = window_matches[:coupon_size]
 
@@ -381,10 +410,23 @@ def save_tracker(data: dict, tracker_file: str = TRACKER_FILE):
     except Exception as e:
         print("Tracker kaydetme hatasi:", e)
 
-def send_matches_individually(bot_token: str, chat_id: str, matches: list, tracker_file: str = TRACKER_FILE) -> dict:
+def send_matches_individually(
+    bot_token: str,
+    chat_id: str,
+    matches: list,
+    tracker_file: str = TRACKER_FILE,
+    enforce_upcoming: bool = True,
+    window_hours: int = 8
+) -> dict:
     tracker = load_tracker(tracker_file)
     sent_count = 0
     skipped_count = 0
+    skipped_started_count = 0
+
+    if enforce_upcoming:
+        original_count = len(matches)
+        matches = filter_upcoming_not_started_matches(matches, window_hours)
+        skipped_started_count = original_count - len(matches)
     
     for m in matches:
         match_id = str(m.get('match_id') or f"{m.get('date')}_{m.get('code')}")
@@ -416,7 +458,12 @@ def send_matches_individually(bot_token: str, chat_id: str, matches: list, track
             time.sleep(0.4)
             
     save_tracker(tracker, tracker_file)
-    return {'sent': sent_count, 'skipped': skipped_count, 'total_tracked': len(tracker)}
+    return {
+        'sent': sent_count,
+        'skipped': skipped_count,
+        'skipped_started': skipped_started_count,
+        'total_tracked': len(tracker)
+    }
 
 def check_and_update_won_matches(bot_token: str, chat_id: str, current_matches: list, tracker_file: str = TRACKER_FILE) -> dict:
     """
