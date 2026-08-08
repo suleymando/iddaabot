@@ -134,19 +134,6 @@ html, body, [class*="css"] {
     line-height: 1.6;
 }
 
-/* Date Header Divider */
-.date-section-header {
-    background: linear-gradient(90deg, rgba(99, 102, 241, 0.25) 0%, rgba(15, 23, 42, 0.8) 100%);
-    border-left: 4px solid #6366f1;
-    border-radius: 10px;
-    padding: 10px 18px;
-    margin: 24px 0 16px 0;
-    color: #38bdf8;
-    font-weight: 800;
-    font-size: 18px;
-    letter-spacing: 0.5px;
-}
-
 /* Metric Cards */
 .metric-card {
     background: rgba(15, 23, 42, 0.75);
@@ -531,13 +518,6 @@ if not st.session_state.all_matches:
     load_data(min_odds_val, max_odds_val)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📅 Tarih Filtresi")
-
-available_dates = sorted(list(dict.fromkeys(m['date'] for m in st.session_state.filtered_matches if m.get('date'))))
-date_options = ["Tüm Tarihler (1300+ Maç)"] + available_dates
-selected_date = st.sidebar.selectbox("Tarih Seçin", date_options, index=0)
-
-st.sidebar.markdown("---")
 st.sidebar.markdown("### 🕒 Sıralama Ayarı")
 sort_order = st.sidebar.radio(
     "Maç Sıralaması",
@@ -568,9 +548,6 @@ st.markdown("""<div class="rule-card">
 
 # Filter Data according to Sidebar Inputs
 curr_filtered = list(st.session_state.filtered_matches)
-
-if selected_date != "Tüm Tarihler (1300+ Maç)":
-    curr_filtered = [m for m in curr_filtered if m.get('date') == selected_date]
 
 if fav_side_filter == "Ev Sahibi Favori":
     curr_filtered = [m for m in curr_filtered if m['fav_side'] == 'EV SAHİBİ']
@@ -603,10 +580,9 @@ if st.sidebar.button("📥 CSV Listesini Telegram'a Gönder", use_container_widt
         st.sidebar.error("Lütfen Bot Token ve Chat ID girin.")
     else:
         with st.spinner("CSV dosyası oluşturulup Telegram grubuna gönderiliyor..."):
-            csv_bytes = generate_csv_bulletin(curr_filtered, f"Suleymando Bülteni ({selected_date})")
+            csv_bytes = generate_csv_bulletin(curr_filtered, "Suleymando Bülten")
             caption = (
                 f"👑 <b>SULEYMANDO BÜLTEN CSV DOSYASI</b>\n"
-                f"📅 Tarih: <b>{selected_date}</b>\n"
                 f"📊 Eşleşen Maç Sayısı: <b>{len(curr_filtered)}</b>"
             )
             filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv"
@@ -650,55 +626,66 @@ with col4:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# Tabs View
-tab_cards, tab_table, tab_export = st.tabs(["🎴 Tarihlere Göre Düzenlenmiş Kartlar", "📊 Tablo Görünümü", "📋 Kuponu Kopyala & CSV İndir"])
+# Main View Tabs
+tab_cards_main, tab_table, tab_export = st.tabs(["🎴 Tarih Sekmeli Kartlar", "📊 Tablo Görünümü", "📋 Kuponu Kopyala & CSV İndir"])
 
-with tab_cards:
+with tab_cards_main:
     if not curr_filtered:
         st.info("Seçilen filtrelere uyan maç bulunamadı.")
     else:
-        dates_in_curr = list(dict.fromkeys(m.get('date', 'Tarih Belirtilmemiş') for m in curr_filtered))
+        # Extract unique sorted dates for side-by-side tabs
+        available_dates = sorted(list(dict.fromkeys(m['date'] for m in curr_filtered if m.get('date'))))
+        date_tab_labels = ["🌐 Tüm Tarihler"] + [f"📅 {d}" for d in available_dates]
+        date_tabs = st.tabs(date_tab_labels)
         
-        for d_str in dates_in_curr:
-            date_matches = [m for m in curr_filtered if m.get('date') == d_str]
-            st.markdown(f"""<div class="date-section-header">📅 {d_str} ({len(date_matches)} Maç)</div>""", unsafe_allow_html=True)
-            
-            for i in range(0, len(date_matches), 2):
-                cols = st.columns(2)
-                for idx, col in enumerate(cols):
-                    if i + idx < len(date_matches):
-                        m = date_matches[i + idx]
-                        
-                        is_home_fav = (m['fav_side'] == 'EV SAHİBİ')
-                        is_away_fav = (m['fav_side'] == 'DEPLASMAN')
-                        
-                        home_class = "fav" if is_home_fav else ""
-                        away_class = "fav" if is_away_fav else ""
-                        
-                        mbs_val = m.get('mbs', 1)
-                        iy_1_5_u_odd = m.get('iy_1_5_ust')
-                        iy_1_5_u_str = f"{iy_1_5_u_odd:.2f}" if iy_1_5_u_odd else "N/A"
-                        
-                        if is_home_fav:
-                            fav_gol_odd = m.get('ev_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('ev_0_5_ust')
-                        else:
-                            fav_gol_odd = m.get('dep_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('dep_0_5_ust')
-                            
-                        fav_gol_str = f"{fav_gol_odd:.2f}" if fav_gol_odd else "N/A"
-                        
-                        status_val = m.get('iy_1_5_status', 'OYNANMADI')
-                        if status_val == 'TUTTU':
-                            status_badge = f'<span class="pill-status-won">✅ İY {m.get("iy_score","")} (TUTTU)</span>'
-                        elif status_val == 'YATTI':
-                            status_badge = f'<span class="pill-status-lost">❌ İY {m.get("iy_score","")} (YATTI)</span>'
-                        else:
-                            status_badge = f'<span class="pill-time">⏰ SAAT: {m["time"]}</span>'
-                        
-                        card_html = f"""<div class="nextgen-card">
+        for t_idx, d_tab in enumerate(date_tabs):
+            with d_tab:
+                if t_idx == 0:
+                    tab_matches = curr_filtered
+                else:
+                    target_d = available_dates[t_idx - 1]
+                    tab_matches = [m for m in curr_filtered if m.get('date') == target_d]
+                    
+                if not tab_matches:
+                    st.info("Bu tarihte formüle uyan maç bulunamadı.")
+                else:
+                    for i in range(0, len(tab_matches), 2):
+                        cols = st.columns(2)
+                        for idx, col in enumerate(cols):
+                            if i + idx < len(tab_matches):
+                                m = tab_matches[i + idx]
+                                
+                                is_home_fav = (m['fav_side'] == 'EV SAHİBİ')
+                                is_away_fav = (m['fav_side'] == 'DEPLASMAN')
+                                
+                                home_class = "fav" if is_home_fav else ""
+                                away_class = "fav" if is_away_fav else ""
+                                
+                                mbs_val = m.get('mbs', 1)
+                                iy_1_5_u_odd = m.get('iy_1_5_ust')
+                                iy_1_5_u_str = f"{iy_1_5_u_odd:.2f}" if iy_1_5_u_odd else "N/A"
+                                
+                                if is_home_fav:
+                                    fav_gol_odd = m.get('ev_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('ev_0_5_ust')
+                                else:
+                                    fav_gol_odd = m.get('dep_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('dep_0_5_ust')
+                                    
+                                fav_gol_str = f"{fav_gol_odd:.2f}" if fav_gol_odd else "N/A"
+                                
+                                status_val = m.get('iy_1_5_status', 'OYNANMADI')
+                                if status_val == 'TUTTU':
+                                    status_badge = f'<span class="pill-status-won">✅ İY {m.get("iy_score","")} (TUTTU)</span>'
+                                elif status_val == 'YATTI':
+                                    status_badge = f'<span class="pill-status-lost">❌ İY {m.get("iy_score","")} (YATTI)</span>'
+                                else:
+                                    status_badge = f'<span class="pill-time">⏰ SAAT: {m["time"]}</span>'
+                                
+                                card_html = f"""<div class="nextgen-card">
 <div class="card-top-bar">
 <div>
 <span class="pill-mbs">🎯 MBS: {mbs_val}</span>
 <span class="pill-code">📌 KOD: {m['code']}</span>
+<span style="color:#94a3b8; font-size:12px; font-weight:700; margin-left:6px;">📅 {m.get('date','')}</span>
 </div>
 {status_badge}
 </div>
@@ -748,10 +735,10 @@ with tab_cards:
 </div>
 </div>
 </div>"""
-                        col.markdown(card_html, unsafe_allow_html=True)
-                        
-                        with col.expander(f"🔍 [{m['code']}] {m['home']} - {m['away']} Tüm İddaa Oranları"):
-                            exp_html = f"""<div class="expander-grid">
+                                col.markdown(card_html, unsafe_allow_html=True)
+                                
+                                with col.expander(f"🔍 [{m['code']}] {m['home']} - {m['away']} Tüm İddaa Oranları"):
+                                    exp_html = f"""<div class="expander-grid">
 <div class="exp-card">
 <div class="exp-title">1. YARI SONUCU</div>
 <div class="exp-row"><span>İY 1:</span> <strong class="exp-val">{m.get('iy_1') or 'N/A'}</strong></div>
@@ -769,7 +756,7 @@ with tab_cards:
 <div class="exp-row"><span>Dep İki Yarı Gol:</span> <strong class="exp-val">{m.get('dep_iki_yari_gol') or 'N/A'}</strong></div>
 </div>
 </div>"""
-                            st.markdown(exp_html, unsafe_allow_html=True)
+                                    st.markdown(exp_html, unsafe_allow_html=True)
 
 with tab_table:
     if curr_filtered:
@@ -810,7 +797,7 @@ with tab_export:
         
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
-            csv_data = generate_csv_bulletin(curr_filtered, f"Suleymando_{selected_date}")
+            csv_data = generate_csv_bulletin(curr_filtered, "Suleymando_Bulten")
             st.download_button(
                 label="📥 CSV Olarak İndir (Excel Uyumlu)",
                 data=csv_data,
