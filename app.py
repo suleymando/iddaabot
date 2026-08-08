@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 from bulletin_scanner import BulletinScanner
+from telegram_notifier import send_telegram_message, format_telegram_bulletin
 
 # Page Configuration
 st.set_page_config(
@@ -10,6 +11,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+DEFAULT_BOT_TOKEN = "8940991344:AAFA8qLKgNDdsp__3KThdtnMSXhh2VrrcI4"
+DEFAULT_CHAT_ID = "-5202583497"
 
 # Ultra-Premium CSS Styling for Unified Glassmorphism UI
 st.markdown("""
@@ -449,13 +453,6 @@ st.sidebar.markdown("### 🔍 Detaylı Filtreler")
 fav_side_filter = st.sidebar.selectbox("Favori Taraf Seçimi", ["Tümü", "Ev Sahibi Favori", "Deplasman Favori"])
 search_query = st.sidebar.text_input("Takım veya Kod Ara", "").strip().lower()
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🌐 Ngrok Dağıtım Bilgisi")
-st.sidebar.info("Arkadaşlarına dağıtmak için terminalde:\n`ngrok http 8501` komutunu çalıştırıp verilen HTTPS linkini paylaşabilirsin.")
-
-if st.session_state.last_updated:
-    st.sidebar.caption(f"🕒 Son Güncelleme: **{st.session_state.last_updated}**")
-
 # Header Section
 st.markdown("""<div class="header-box">
     <div class="header-title">⚡ Suleymando İY 1,5 ÜST Bülten Tarama Paneli</div>
@@ -493,6 +490,32 @@ elif "Koda Göre" in sort_order:
     curr_filtered.sort(key=lambda m: m['code'])
 elif "Orana Göre" in sort_order:
     curr_filtered.sort(key=lambda m: m['fav_odds'])
+
+# Telegram Bot Integration inside Sidebar
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📱 Telegram Bot Entegrasyonu")
+
+tg_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_BOT_TOKEN, type="password")
+tg_chat_id = st.sidebar.text_input("Telegram Chat ID", value=DEFAULT_CHAT_ID)
+
+if st.sidebar.button("🚀 Telegram Grubuna Gönder", use_container_width=True, type="primary"):
+    if not tg_token or not tg_chat_id:
+        st.sidebar.error("Lütfen Bot Token ve Chat ID girin.")
+    else:
+        with st.spinner("Telegram grubunuza gönderiliyor..."):
+            title = "👑 SULEYMANDO İY 1,5 ÜST CANLI BÜLTENİ"
+            msg_chunks = format_telegram_bulletin(curr_filtered, title)
+            sent_count = 0
+            for chunk in msg_chunks:
+                if send_telegram_message(tg_token, tg_chat_id, chunk):
+                    sent_count += 1
+            if sent_count > 0:
+                st.sidebar.success(f"✅ {len(curr_filtered)} maç Telegram grubunuza gönderildi!")
+            else:
+                st.sidebar.error("Telegram mesajı gönderilemedi. Chat ID veya Token bilgisini kontrol edin.")
+
+if st.session_state.last_updated:
+    st.sidebar.caption(f"🕒 Son Güncelleme: **{st.session_state.last_updated}**")
 
 home_fav_count = sum(1 for m in curr_filtered if m['fav_side'] == 'EV SAHİBİ')
 away_fav_count = sum(1 for m in curr_filtered if m['fav_side'] == 'DEPLASMAN')
