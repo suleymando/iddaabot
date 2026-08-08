@@ -1,12 +1,15 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import threading
+import time
 from bulletin_scanner import BulletinScanner
 from telegram_notifier import (
     send_telegram_message, 
     send_telegram_document, 
-    generate_excel_bulletin, 
-    format_telegram_2h_bulletin
+    generate_csv_bulletin, 
+    format_telegram_2h_bulletin,
+    format_telegram_winrate_report
 )
 
 # Page Configuration
@@ -19,6 +22,58 @@ st.set_page_config(
 
 DEFAULT_BOT_TOKEN = "8940991344:AAFA8qLKgNDdsp__3KThdtnMSXhh2VrrcI4"
 DEFAULT_CHAT_ID = "-5202583497"
+
+# Background Scheduler Thread for Streamlit Cloud 24/7 Automation
+def run_cloud_telegram_scan(mode="every_2h"):
+    scanner = BulletinScanner()
+    today_date_str = datetime.datetime.now().strftime("%d.%m.%Y")
+    try:
+        all_m, filt_m = scanner.scan_bulletin(min_odds=1.00, max_odds=1.23, fetch_details=True)
+        
+        if mode == "night_2345":
+            today_matches = [m for m in filt_m if m.get('date') == today_date_str]
+            if not today_matches:
+                today_matches = filt_m
+            report_text = format_telegram_winrate_report(today_matches, today_date_str)
+            csv_bytes = generate_csv_bulletin(filt_m, f"Suleymando_GunSonu_{today_date_str}")
+            
+            send_telegram_message(DEFAULT_BOT_TOKEN, DEFAULT_CHAT_ID, report_text)
+            filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+            send_telegram_document(DEFAULT_BOT_TOKEN, DEFAULT_CHAT_ID, csv_bytes, filename, f"📊 Suleymando {today_date_str} Bülten (.csv)")
+        else:
+            now_minutes = datetime.datetime.now().hour * 60 + datetime.datetime.now().minute
+            max_target_minutes = now_minutes + (2 * 60)
+            
+            upcoming = [
+                m for m in filt_m 
+                if m.get('date') == today_date_str and now_minutes <= parse_time_minutes(m['time']) <= max_target_minutes
+            ]
+            msg_text = format_telegram_2h_bulletin(upcoming)
+            send_telegram_message(DEFAULT_BOT_TOKEN, DEFAULT_CHAT_ID, msg_text)
+    except Exception as e:
+        print("Cloud Telegram Scan Error:", e)
+
+def init_cloud_scheduler():
+    if 'bg_scheduler_started' not in st.session_state:
+        st.session_state['bg_scheduler_started'] = True
+        
+        def scheduler_loop():
+            last_night_date = None
+            last_2h_time = time.time()
+            while True:
+                now = datetime.datetime.now()
+                if now.hour == 23 and now.minute == 45 and last_night_date != now.date():
+                    run_cloud_telegram_scan(mode="night_2345")
+                    last_night_date = now.date()
+                if time.time() - last_2h_time >= 7200:
+                    run_cloud_telegram_scan(mode="every_2h")
+                    last_2h_time = time.time()
+                time.sleep(30)
+                
+        t = threading.Thread(target=scheduler_loop, daemon=True)
+        t.start()
+
+init_cloud_scheduler()
 
 # Ultra-Premium CSS Styling for Unified Glassmorphism UI
 st.markdown("""
@@ -277,7 +332,7 @@ html, body, [class*="css"] {
     padding: 10px 14px;
     margin-bottom: 16px;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 8px;
     text-align: center;
 }
@@ -499,7 +554,7 @@ search_query = st.sidebar.text_input("Takım veya Kod Ara", "").strip().lower()
 # Header Section
 st.markdown("""<div class="header-box">
     <div class="header-title">⚡ Suleymando İY 1,5 ÜST Bülten Tarama Paneli</div>
-    <div class="header-subtitle">Mackolik bülteninin tamamını tarar; MBS, İY 1.5 Üst, İY Favori Gol ve 2/1 - 1/X detaylı oranlarını çekerek başlama saatine göre kronolojik sıralar.</div>
+    <div class="header-subtitle">Mackolik bülteninin tamamını tarar; MBS, İY 1.5 Üst ve Favori İY 1 Gol oranlarını çekerek başlama saatine göre kronolojik sıralar.</div>
 </div>""", unsafe_allow_html=True)
 
 # Rule Explanation Banner
@@ -507,8 +562,7 @@ st.markdown("""<div class="rule-card">
     <div class="rule-title">📌 Formül Kuralları (Suleymando %86 Başarı Formülü)</div>
     <div class="rule-desc">
         • Favori takımın oranı <b>1.00 ile 1.23</b> arasında ise bu maça <b>İY 1,5 ÜST</b> denenir.<br>
-        • Favori takım <b>Ev Sahibi</b> ise ekstra olarak <b>2/1 (İY 2 / MS 1)</b> denemesi önerilir.<br>
-        • Favori takım <b>Deplasman</b> ise ekstra olarak <b>1/X (İY 1 / MS X)</b> denemesi önerilir.
+        • Tüm maçlarda <b>Ekstra Tahmin</b> olarak <b>FAVORİ İLK YARI 1 GOL ATAR</b> seçeneği önerilir.
     </div>
 </div>""", unsafe_allow_html=True)
 
@@ -544,21 +598,21 @@ st.sidebar.markdown("### 📱 Telegram Bot Entegrasyonu")
 tg_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_BOT_TOKEN, type="password")
 tg_chat_id = st.sidebar.text_input("Telegram Chat ID", value=DEFAULT_CHAT_ID)
 
-if st.sidebar.button("📊 Excel Listesini Telegram'a Gönder", use_container_width=True, type="primary"):
+if st.sidebar.button("📥 CSV Listesini Telegram'a Gönder", use_container_width=True, type="primary"):
     if not tg_token or not tg_chat_id:
         st.sidebar.error("Lütfen Bot Token ve Chat ID girin.")
     else:
-        with st.spinner("Excel dosyası oluşturulup Telegram grubuna gönderiliyor..."):
-            excel_bytes = generate_excel_bulletin(curr_filtered, f"Suleymando Bülteni ({selected_date})")
+        with st.spinner("CSV dosyası oluşturulup Telegram grubuna gönderiliyor..."):
+            csv_bytes = generate_csv_bulletin(curr_filtered, f"Suleymando Bülteni ({selected_date})")
             caption = (
-                f"👑 <b>SULEYMANDO BÜLTEN EXCEL DOSYASI</b>\n"
+                f"👑 <b>SULEYMANDO BÜLTEN CSV DOSYASI</b>\n"
                 f"📅 Tarih: <b>{selected_date}</b>\n"
                 f"📊 Eşleşen Maç Sayısı: <b>{len(curr_filtered)}</b>"
             )
-            filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-            ok = send_telegram_document(tg_token, tg_chat_id, excel_bytes, filename, caption)
+            filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+            ok = send_telegram_document(tg_token, tg_chat_id, csv_bytes, filename, caption)
             if ok:
-                st.sidebar.success(f"✅ Excel dosyası ({len(curr_filtered)} maç) Telegram grubunuza gönderildi!")
+                st.sidebar.success(f"✅ CSV dosyası ({len(curr_filtered)} maç) Telegram grubunuza gönderildi!")
             else:
                 st.sidebar.error("Telegram mesajı gönderilemedi.")
 
@@ -585,25 +639,24 @@ with col2:
 with col3:
     st.markdown(f"""<div class="metric-card">
         <div class="metric-val" style="color: #60a5fa;">{home_fav_count}</div>
-        <div class="metric-lbl">Ev Sahibi Favori (2/1)</div>
+        <div class="metric-lbl">Ev Sahibi Favori</div>
     </div>""", unsafe_allow_html=True)
 
 with col4:
     st.markdown(f"""<div class="metric-card">
         <div class="metric-val" style="color: #fbbf24;">{away_fav_count}</div>
-        <div class="metric-lbl">Deplasman Favori (1/X)</div>
+        <div class="metric-lbl">Deplasman Favori</div>
     </div>""", unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # Tabs View
-tab_cards, tab_table, tab_export = st.tabs(["🎴 Tarihlere Göre Düzenlenmiş Kartlar", "📊 Tablo Görünümü", "📋 Kuponu Kopyala & Excel İndir"])
+tab_cards, tab_table, tab_export = st.tabs(["🎴 Tarihlere Göre Düzenlenmiş Kartlar", "📊 Tablo Görünümü", "📋 Kuponu Kopyala & CSV İndir"])
 
 with tab_cards:
     if not curr_filtered:
         st.info("Seçilen filtrelere uyan maç bulunamadı.")
     else:
-        # Group matches by Date
         dates_in_curr = list(dict.fromkeys(m.get('date', 'Tarih Belirtilmemiş') for m in curr_filtered))
         
         for d_str in dates_in_curr:
@@ -628,13 +681,10 @@ with tab_cards:
                         
                         if is_home_fav:
                             fav_gol_odd = m.get('ev_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('ev_0_5_ust')
-                            extra_odd = m.get('iy_ms_2_1')
                         else:
                             fav_gol_odd = m.get('dep_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('dep_0_5_ust')
-                            extra_odd = m.get('iy_ms_1_x')
                             
                         fav_gol_str = f"{fav_gol_odd:.2f}" if fav_gol_odd else "N/A"
-                        extra_odd_str = f"{extra_odd:.2f}" if extra_odd else "N/A"
                         
                         status_val = m.get('iy_1_5_status', 'OYNANMADI')
                         if status_val == 'TUTTU':
@@ -677,16 +727,12 @@ with tab_cards:
 </div>
 <div class="detail-highlights">
 <div class="dh-item">
-<div class="dh-lbl">🔥 İY 1.5 ÜST</div>
+<div class="dh-lbl">🔥 İY 1.5 ÜST ORANI</div>
 <div class="dh-val" style="color: #34d399;">{iy_1_5_u_str}</div>
 </div>
 <div class="dh-item">
-<div class="dh-lbl">⚽ İY FAV GOL</div>
+<div class="dh-lbl">⚽ FAVORİ İY 1 GOL ORANI</div>
 <div class="dh-val" style="color: #38bdf8;">{fav_gol_str}</div>
-</div>
-<div class="dh-item">
-<div class="dh-lbl">🎯 {m['extra_prediction'].split(' ')[0]} ORANI</div>
-<div class="dh-val" style="color: #fbbf24;">{extra_odd_str}</div>
 </div>
 </div>
 <div class="pred-banner">
@@ -697,8 +743,8 @@ with tab_cards:
 </div>
 <div class="pred-group">
 <span class="pred-tag-extra">EKSTRA</span>
-<span class="pred-txt-extra">🎯 {m['extra_prediction']}</span>
-<span class="odd-contour-gold">{extra_odd_str}</span>
+<span class="pred-txt-extra">⚽ FAVORİ İY 1 GOL ATAR</span>
+<span class="odd-contour-gold">{fav_gol_str}</span>
 </div>
 </div>
 </div>"""
@@ -755,7 +801,7 @@ with tab_export:
             coupon_lines.append(
                 f"{idx}. 📅 {m.get('date','')} ⏰ {m['time']} | [MBS: {m.get('mbs',1)}] [{m['code']}] {m['home']} - {m['away']} "
                 f"(Fav: {m['fav_side']} {m['fav_odds']:.2f}) "
-                f"-> 🔥 Tahmin: İY 1.5 ÜST (Oran: {iy_ust_str}) | 🎯 Ekstra: {m['extra_prediction']}{status_tag}"
+                f"-> 🔥 Tahmin: İY 1.5 ÜST (Oran: {iy_ust_str}) | ⚽ Ekstra: FAVORİ İY 1 GOL ATAR{status_tag}"
             )
             
         coupon_text = "\n".join(coupon_lines)
@@ -764,19 +810,9 @@ with tab_export:
         
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
-            excel_data = generate_excel_bulletin(curr_filtered, f"Suleymando_{selected_date}")
+            csv_data = generate_csv_bulletin(curr_filtered, f"Suleymando_{selected_date}")
             st.download_button(
-                label="📥 Excel (.xlsx) Olarak İndir",
-                data=excel_data,
-                file_name=f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        with col_dl2:
-            df = pd.DataFrame(curr_filtered)
-            csv_data = df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label="📥 CSV Olarak İndir",
+                label="📥 CSV Olarak İndir (Excel Uyumlu)",
                 data=csv_data,
                 file_name=f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",

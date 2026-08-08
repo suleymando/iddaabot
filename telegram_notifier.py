@@ -3,8 +3,6 @@ import json
 import uuid
 import io
 import pandas as pd
-import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 def send_telegram_message(bot_token: str, chat_id: str, text: str) -> bool:
     if not bot_token or not chat_id:
@@ -54,7 +52,7 @@ def send_telegram_document(bot_token: str, chat_id: str, file_bytes: bytes, file
     # document
     body.append(f'--{boundary}'.encode('utf-8'))
     body.append(f'Content-Disposition: form-data; name="document"; filename="{filename}"'.encode('utf-8'))
-    body.append(b'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    body.append(b'Content-Type: text/csv; charset=utf-8')
     body.append(b'')
     body.append(file_bytes)
     
@@ -77,80 +75,52 @@ def send_telegram_document(bot_token: str, chat_id: str, file_bytes: bytes, file
         print(f"Telegram Doküman Hatası: {e}")
         return False
 
-def generate_excel_bulletin(matches: list, title: str = "SULEYMANDO BÜLTENİ") -> bytes:
+def generate_csv_bulletin(matches: list, title: str = "SULEYMANDO BÜLTENİ") -> bytes:
     """
-    Formüle uyan maçları renkli ve biçimlendirilmiş Excel (.xlsx) dosyasına dönüştürür.
+    Formüle uyan maçları UTF-8-SIG (Excel uyumlu CSV) dosyasına dönüştürür.
     """
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Formüle Uyan Maçlar"
-    
-    # Header Styling
-    header_fill = PatternFill(start_color="1E1B4B", end_color="1E1B4B", fill_type="solid")
-    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
-    align_center = Alignment(horizontal="center", vertical="center")
-    
-    headers = [
-        "Tarih", "Saat", "Kod", "MBS", "Ev Sahibi", "Deplasman", 
-        "MS 1", "MS X", "MS 2", "Favori Taraf", "Favori Oran", 
-        "İY 1.5 Üst Oran", "Ana Tahmin", "Ekstra Tahmin", "İY Skoru", "MS Skoru", "İY 1.5 Üst Durumu"
-    ]
-    
-    ws.append(headers)
-    for col_num in range(1, len(headers) + 1):
-        cell = ws.cell(row=1, column=col_num)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = align_center
-
-    # Row Data
+    rows = []
     for m in matches:
         is_home_fav = (m['fav_side'] == 'EV SAHİBİ')
         iy_ust_odd = m.get('iy_1_5_ust')
         iy_ust_str = f"{iy_ust_odd:.2f}" if iy_ust_odd else "N/A"
         
-        status_str = m.get('iy_1_5_status', 'OYNANMADI')
-        if status_str == 'TUTTU':
-            status_display = "✅ TUTTU"
-        elif status_str == 'YATTI':
-            status_display = "❌ YATTI"
+        if is_home_fav:
+            fav_gol_odd = m.get('ev_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('ev_0_5_ust')
         else:
-            status_display = "⏳ OYNANMADI"
+            fav_gol_odd = m.get('dep_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('dep_0_5_ust')
             
-        row_values = [
-            m.get('date', ''),
-            m.get('time', ''),
-            m.get('code', ''),
-            m.get('mbs', 1),
-            m.get('home', ''),
-            m.get('away', ''),
-            m.get('ms1', 0.0),
-            m.get('msx', 0.0),
-            m.get('ms2', 0.0),
-            m.get('fav_side', ''),
-            m.get('fav_odds', 0.0),
-            iy_ust_str,
-            "İY 1.5 ÜST",
-            m.get('extra_prediction', ''),
-            m.get('iy_score', '-'),
-            m.get('ms_score', '-'),
-            status_display
-        ]
-        ws.append(row_values)
+        fav_gol_str = f"{fav_gol_odd:.2f}" if fav_gol_odd else "N/A"
+        status_str = m.get('iy_1_5_status', 'OYNANMADI')
         
-    # Auto-adjust column widths
-    for col in ws.columns:
-        max_len = max(len(str(cell.value or '')) for cell in col)
-        col_letter = openpyxl.utils.get_column_letter(col[0].column)
-        ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+        rows.append({
+            'Tarih': m.get('date', ''),
+            'Saat': m.get('time', ''),
+            'Kod': m.get('code', ''),
+            'MBS': m.get('mbs', 1),
+            'Ev Sahibi': m.get('home', ''),
+            'Deplasman': m.get('away', ''),
+            'MS 1': m.get('ms1', 0.0),
+            'MS X': m.get('msx', 0.0),
+            'MS 2': m.get('ms2', 0.0),
+            'Favori Taraf': m.get('fav_side', ''),
+            'Favori Oran': m.get('fav_odds', 0.0),
+            'İY 1.5 Üst Oran': iy_ust_str,
+            'Favori İY 1 Gol Oranı': fav_gol_str,
+            'Ana Tahmin': 'İY 1.5 ÜST',
+            'Ekstra Tahmin': 'FAVORİ İY 1 GOL ATAR',
+            'İY Skoru': m.get('iy_score', '-'),
+            'MS Skoru': m.get('ms_score', '-'),
+            'İY 1.5 Üst Durumu': status_str
+        })
         
-    output = io.BytesIO()
-    wb.save(output)
-    return output.getvalue()
+    df = pd.DataFrame(rows)
+    csv_string = df.to_csv(index=False, encoding='utf-8-sig')
+    return csv_string.encode('utf-8-sig')
 
 def format_telegram_2h_bulletin(matches: list) -> str:
     """
-    Önümüzdeki 2 saat içinde başlayacak maçların kısa ve öz Telegram mesaj şablonu (Spam önleyici).
+    Önümüzdeki 2 saat içinde başlayacak tüm maçların TEK BİR MESAJ HAFİF ŞABLONU.
     """
     if not matches:
         return "⏳ <b>SULEYMANDO BİLDİRİMİ</b>\n\nÖnümüzdeki 2 saat içinde başlayacak formüle uyan maç bulunmamaktadır."
@@ -160,14 +130,22 @@ def format_telegram_2h_bulletin(matches: list) -> str:
     msg += "━━━━━━━━━━━━━━━━━━━\n\n"
     
     for idx, m in enumerate(matches, 1):
+        is_home_fav = (m['fav_side'] == 'EV SAHİBİ')
         iy_ust_odd = m.get('iy_1_5_ust')
         iy_ust_str = f"{iy_ust_odd:.2f}" if iy_ust_odd else "N/A"
-        fav_icon = "👑 EV" if m['fav_side'] == 'EV SAHİBİ' else "✈️ DEP"
+        
+        if is_home_fav:
+            fav_gol_odd = m.get('ev_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('ev_0_5_ust')
+        else:
+            fav_gol_odd = m.get('dep_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('dep_0_5_ust')
+            
+        fav_gol_str = f"{fav_gol_odd:.2f}" if fav_gol_odd else "N/A"
+        fav_icon = "👑 EV" if is_home_fav else "✈️ DEP"
         
         msg += (
             f"<b>{idx}. ⏰ {m['time']}</b> | <code>MBS:{m.get('mbs',1)}</code> | 📌 <code>{m['code']}</code>\n"
             f"⚽ <b>{m['home']}</b> vs <b>{m['away']}</b> (Fav: {fav_icon})\n"
-            f"🔥 <b>İY 1.5 ÜST:</b> <code>{iy_ust_str}</code> | 🎯 <b>Ekstra:</b> {m['extra_prediction']}\n"
+            f"🔥 <b>İY 1.5 ÜST:</b> <code>{iy_ust_str}</code> | ⚽ <b>Fav İY Gol:</b> <code>{fav_gol_str}</code>\n"
             f"───────────────────\n"
         )
         
@@ -175,7 +153,7 @@ def format_telegram_2h_bulletin(matches: list) -> str:
 
 def format_telegram_winrate_report(matches: list, date_str: str) -> str:
     """
-    Gece 23:45 Gün Sonu Başarı ve İY Skor Doğrulama Raporu.
+    Gece 23:45 Gün Sonu Başarı ve İY Skor Doğrulama TEK MESAJ Raporu.
     """
     played_matches = [m for m in matches if m.get('iy_1_5_status') in ['TUTTU', 'YATTI']]
     won_matches = [m for m in played_matches if m.get('iy_1_5_status') == 'TUTTU']
@@ -196,6 +174,6 @@ def format_telegram_winrate_report(matches: list, date_str: str) -> str:
         f"📊 <b>Oynanan Toplam Maç:</b> {total_count}\n"
         f"🔥 <b>GÜNÜN BAŞARI ORANI:</b> <b>%{win_rate:.1f}</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📎 <i>Detaylı maç listesi ve İY skor doğrulama raporu ekteki Excel dosyasındadır.</i>"
+        f"📎 <i>Detaylı maç listesi ve İY skor doğrulama raporu ekteki CSV dosyasındadır.</i>"
     )
     return report

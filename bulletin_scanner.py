@@ -38,7 +38,6 @@ class BulletinScanner:
             return raw_bytes.decode('utf-8', errors='ignore')
 
     def parse_matches(self, html: str) -> List[Dict[str, Any]]:
-        # Split HTML into tr blocks to accurately track Date headers and match rows
         tr_blocks = re.findall(r'<tr[^>]*>.*?</tr>', html, re.DOTALL | re.IGNORECASE)
         
         parsed_matches = []
@@ -46,7 +45,6 @@ class BulletinScanner:
         current_date = datetime.datetime.now().strftime("%d.%m.%Y")
         
         for tr in tr_blocks:
-            # Detect Date Header row
             date_m = re.search(r'(\d{2}\.\d{2}\.\d{4})', tr)
             if 'popMatch' not in tr and date_m:
                 current_date = date_m.group(1)
@@ -55,26 +53,21 @@ class BulletinScanner:
             if 'popMatch' not in tr:
                 continue
                 
-            # Match ID (for getMoreBets AJAX)
             mac_id_m = re.search(r'popMatch\((\d+)', tr)
             match_id = mac_id_m.group(1) if mac_id_m else ""
             
-            # Takım İsimleri
             teams = re.findall(r'popTeam\(\d+\)[^>]*>\s*([^<]+)', tr)
             if len(teams) < 2:
                 continue
             home_team = teams[0].replace('&nbsp;', ' ').strip()
             away_team = teams[1].replace('&nbsp;', ' ').strip()
             
-            # Maç Saati
             time_m = re.search(r'<td[^>]*align=["\']center["\'][^>]*>(\d{2}:\d{2})</td>', tr)
             match_time = time_m.group(1) if time_m else "--:--"
             
-            # Maç Kodu
             code_m = re.search(r'<td[^>]*align=["\']center["\'][^>]*>(\d{4,6})</td>', tr)
             code = code_m.group(1) if code_m else "------"
             
-            # Extract İY (First Half) & MS (Full Time) Scores if played/completed
             tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
             score_cells = [t.strip() for t in tds if re.match(r'^\d+-\d+$', t.strip())]
             
@@ -100,7 +93,6 @@ class BulletinScanner:
                 continue
             seen_keys.add(match_key)
             
-            # Oranlar (MS1, MSX, MS2)
             dialogs = re.findall(r'openOddsDialog\((.*?)\)', tr)
             ms1, msx, ms2 = 0.0, 0.0, 0.0
             found_ms = False
@@ -142,9 +134,6 @@ class BulletinScanner:
         return parsed_matches
 
     def fetch_detailed_odds(self, match_id: str) -> Dict[str, Any]:
-        """
-        Mackolik IddaaHandler AJAX servisine istek atarak maçın tüm detaylı oranlarını (MBS, İY 1.5 ÜST, İY Favori Gol vb.) çeker.
-        """
         if not match_id:
             return {}
             
@@ -183,14 +172,12 @@ class BulletinScanner:
                 o_str = m.get('o', '')
                 items = o_str.split('|') if o_str else []
                 
-                # 14: 1. Yarı 1.5 Alt/Üst
                 if mid == 14 and len(items) >= 2:
                     try:
                         details['iy_1_5_alt'] = float(items[0]) if items[0] and items[0] != '0' else None
                         details['iy_1_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
                     except Exception:
                         pass
-                # 5: İY/MS
                 elif mid == 5:
                     for item in items:
                         parts = item.split(':')
@@ -198,13 +185,12 @@ class BulletinScanner:
                             o_id, val = parts[0], parts[1]
                             try:
                                 v_float = float(val) if val and val != '0' else None
-                                if o_id == '15': # 2/1
+                                if o_id == '15':
                                     details['iy_ms_2_1'] = v_float
-                                elif o_id == '7': # 1/X
+                                elif o_id == '7':
                                     details['iy_ms_1_x'] = v_float
                             except Exception:
                                 pass
-                # 7: 1. Yarı Sonucu
                 elif mid == 7 and len(items) >= 3:
                     try:
                         details['iy_1'] = float(items[0]) if items[0] and items[0] != '0' else None
@@ -212,25 +198,21 @@ class BulletinScanner:
                         details['iy_2'] = float(items[2]) if items[2] and items[2] != '0' else None
                     except Exception:
                         pass
-                # 12: 2,5 Gol Alt/Üst
                 elif mid == 12 and len(items) >= 2:
                     try:
                         details['ms_2_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
                     except Exception:
                         pass
-                # 38: Karşılıklı Gol
                 elif mid == 38 and len(items) >= 2:
                     try:
                         details['kg_var'] = float(items[0]) if items[0] and items[0] != '0' else None
                     except Exception:
                         pass
-                # 209: 1. Yarı 0,5 Alt/Üst
                 elif mid == 209 and len(items) >= 2:
                     try:
                         details['iy_0_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
                     except Exception:
                         pass
-                # 295/296: Ev/Dep İki Yarıda Gol
                 elif mid == 295 and len(items) >= 1:
                     try:
                         details['ev_iki_yari_gol'] = float(items[0]) if items[0] and items[0] != '0' else None
@@ -280,12 +262,7 @@ class BulletinScanner:
                 m_copy['fav_side'] = fav_side
                 m_copy['fav_odds'] = fav_odds
                 m_copy['primary_prediction'] = "İY 1,5 ÜST"
-                
-                if fav_side == "EV SAHİBİ":
-                    m_copy['extra_prediction'] = "2/1 (İY 2 / MS 1)"
-                else:
-                    m_copy['extra_prediction'] = "1/X (İY 1 / MS X)"
-                    
+                m_copy['extra_prediction'] = "FAVORİ İY 1 GOL ATAR"
                 filtered.append(m_copy)
                 
         if fetch_details and filtered:
@@ -314,8 +291,3 @@ class BulletinScanner:
         all_matches = self.parse_matches(html)
         filtered_matches = self.apply_suleymando_filter(all_matches, min_odds, max_odds, fetch_details)
         return all_matches, filtered_matches
-
-if __name__ == '__main__':
-    scanner = BulletinScanner()
-    all_m, filt_m = scanner.scan_bulletin(1.00, 1.23, fetch_details=False)
-    print(f"Scanned {len(all_m)} total matches, Matched {len(filt_m)} matches.")
