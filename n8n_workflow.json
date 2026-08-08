@@ -1,0 +1,108 @@
+{
+  "name": "Suleymando Iddaa Telegram Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "1a2b3c4d-every-4h-trigger",
+      "name": "Her 4 Saatlik Tetikleyici",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "45 23 * * *"
+            }
+          ]
+        }
+      },
+      "id": "5e6f7g8h-night-2345-trigger",
+      "name": "Gece 23:45 Gelecek Bülten Tetikleyici",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        250,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR-RAILWAY-APP.up.railway.app/api/telegram_trigger",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"bot_token\": \"YOUR_TELEGRAM_BOT_TOKEN\",\n  \"chat_id\": \"YOUR_TELEGRAM_CHAT_ID\",\n  \"mode\": \"every_4h\"\n}",
+        "options": {}
+      },
+      "id": "9i0j1k2l-http-4h-request",
+      "name": "4 Saatlik Taramayı Gönder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        550,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR-RAILWAY-APP.up.railway.app/api/telegram_trigger",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"bot_token\": \"YOUR_TELEGRAM_BOT_TOKEN\",\n  \"chat_id\": \"YOUR_TELEGRAM_CHAT_ID\",\n  \"mode\": \"night_2345\"\n}",
+        "options": {}
+      },
+      "id": "3m4n5o6p-http-night-request",
+      "name": "23:45 Tüm Bülteni Gönder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        550,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Her 4 Saatlik Tetikleyici": {
+      "main": [
+        [
+          {
+            "node": "4 Saatlik Taramayı Gönder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gece 23:45 Gelecek Bülten Tetikleyici": {
+      "main": [
+        [
+          {
+            "node": "23:45 Tüm Bülteni Gönder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
