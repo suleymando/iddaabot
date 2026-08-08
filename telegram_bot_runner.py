@@ -11,13 +11,28 @@ from telegram_notifier import (
     send_telegram_document, 
     generate_csv_bulletin, 
     format_telegram_2h_bulletin,
-    format_telegram_winrate_report
+    format_telegram_winrate_report,
+    send_matches_individually,
+    check_and_update_won_matches,
+    send_daily_parlay_coupon,
+    send_short_term_coupon
 )
 
 BOT_TOKEN = "8940991344:AAFA8qLKgNDdsp__3KThdtnMSXhh2VrrcI4"
 CHAT_ID = "-5202583497"
 
 scanner = BulletinScanner()
+
+# ─── Kısa Vade Kuponu Gönderim Saatleri ─────────────────────────────────────
+# 08:45  11:45  14:45  17:45  20:45  23:45
+SHORT_TERM_COUPON_TIMES = [
+    (8,  45),
+    (11, 45),
+    (14, 45),
+    (17, 45),
+    (20, 45),
+    (23, 45),
+]
 
 def parse_time_minutes(time_str: str) -> int:
     try:
@@ -40,8 +55,23 @@ def run_bot_scan(mode="every_2h"):
         all_m, filt_m = scanner.scan_bulletin(min_odds=1.00, max_odds=1.23, fetch_details=True)
         filt_m.sort(key=lambda m: (m.get('date', ''), parse_time_minutes(m['time'])))
         
-        if mode == "night_2345":
-            # 23:45 GÜN SONU BAŞARI KONTROLÜ VE CSV GÖNDERİMİ
+        # Her çalışmada önceki mesajları güncelle
+        update_res = check_and_update_won_matches(BOT_TOKEN, CHAT_ID, filt_m)
+        if update_res['updated'] > 0:
+            print(f"[{now_str}] ✅ {update_res['updated']} maç güncellendi (🏆 reaksiyon eklendi).")
+
+        # ── Mod: Günün Banko Kuponu ──────────────────────────────────────────
+        if mode == "parlay_coupon":
+            ok = send_daily_parlay_coupon(BOT_TOKEN, CHAT_ID, filt_m)
+            print(f"[{now_str}] 👑 Günün Banko Kupon Gönderim: {ok}")
+
+        # ── Mod: Kısa Vade Kuponu (her 3 saatlik pencere) ───────────────────
+        elif mode == "short_term_coupon":
+            ok = send_short_term_coupon(BOT_TOKEN, CHAT_ID, filt_m, window_hours=3)
+            print(f"[{now_str}] ⚡ Kısa Vade Kupon Gönderim: {ok}")
+
+        # ── Mod: Gece 23:45 Gün Sonu Raporu & CSV ───────────────────────────
+        elif mode == "night_2345":
             today_matches = [m for m in filt_m if m.get('date') == today_date_str]
             if not today_matches:
                 today_matches = filt_m
@@ -49,17 +79,15 @@ def run_bot_scan(mode="every_2h"):
             report_text = format_telegram_winrate_report(today_matches, today_date_str)
             csv_bytes = generate_csv_bulletin(filt_m, f"Suleymando_GunSonu_{today_date_str}")
             
-            # Send Victory Report Text
             send_telegram_message(BOT_TOKEN, CHAT_ID, report_text)
             
-            # Send CSV File Document
             filename = f"suleymando_bulten_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv"
             caption = f"📊 Suleymando {today_date_str} Tüm Bülten ve İY Doğrulama Raporu (.csv)"
             ok = send_telegram_document(BOT_TOKEN, CHAT_ID, csv_bytes, filename, caption)
-            print(f"[{now_str}] Gece 23:45 CSV Gönderim Durumu: {ok}")
+            print(f"[{now_str}] 🌙 Gece 23:45 CSV Gönderim: {ok}")
             
+        # ── Mod: Her 2 Saatte Bir Yaklaşan Maç Bildirimi ────────────────────
         else:
-            # ÖNÜMÜZDEKİ 2 SAAT İÇİNDE BAŞLAYACAK MAÇLAR (TEK MESAJ)
             now_minutes = datetime.datetime.now().hour * 60 + datetime.datetime.now().minute
             max_target_minutes = now_minutes + (2 * 60)
             
@@ -68,36 +96,63 @@ def run_bot_scan(mode="every_2h"):
                 if m.get('date') == today_date_str and now_minutes <= parse_time_minutes(m['time']) <= max_target_minutes
             ]
             
-            msg_text = format_telegram_2h_bulletin(upcoming_2h_matches)
-            ok = send_telegram_message(BOT_TOKEN, CHAT_ID, msg_text)
-            print(f"[{now_str}] 2 Saatlik Tek Mesaj Gönderim Durumu: {ok} (Maç Sayısı: {len(upcoming_2h_matches)})")
+            res = send_matches_individually(BOT_TOKEN, CHAT_ID, upcoming_2h_matches if upcoming_2h_matches else filt_m[:5])
+            print(f"[{now_str}] 📱 Tek tek maç gönderim: {res}")
             
     except Exception as e:
-        print(f"[{now_str}] Tarama Hatası: {e}")
+        print(f"[{now_str}] ❌ Tarama Hatası: {e}")
 
 if __name__ == "__main__":
     print("🤖 Suleymando Telegram Otomatik Bot Servisi Başlatıldı...")
     print(f"🎯 Hedef Grup Chat ID: {CHAT_ID}")
+    print(f"⚡ Kısa Vade Kupon Saatleri: 08:45 | 11:45 | 14:45 | 17:45 | 20:45 | 23:45")
     
-    # İlk çalıştırmada 2 saatlik yaklaşan maç taraması
+    # Başlangıçta bir tur çalıştır
     run_bot_scan(mode="every_2h")
+    run_bot_scan(mode="parlay_coupon")
     
-    last_night_scan_date = None
-    last_2h_scan_time = time.time()
+    # Zamanlayıcı kayıtları — aynı dakikada tekrar tetiklenmemesi için
+    last_night_scan_date        = None       # 23:45 günlük rapor
+    last_short_term_coupon_sent = set()      # (gün, saat, dakika) ikilisi
+    last_2h_scan_time           = time.time()
+    last_score_check_time       = time.time()
     
     while True:
         now = datetime.datetime.now()
+        h, m = now.hour, now.minute
+        today_key = now.date()
+
+        # 1. ── Kısa Vade Kuponu: 08:45 / 11:45 / 14:45 / 17:45 / 20:45 / 23:45 ──
+        for (target_h, target_m) in SHORT_TERM_COUPON_TIMES:
+            slot_key = (today_key, target_h, target_m)
+            if h == target_h and m == target_m and slot_key not in last_short_term_coupon_sent:
+                print(f"⚡ {target_h:02d}:{target_m:02d} Kısa Vade Kupon Zamanlayıcısı Tetiklendi!")
+                run_bot_scan(mode="short_term_coupon")
+                last_short_term_coupon_sent.add(slot_key)
+                # Seti temiz tut — sadece bugünün slotlarını sakla
+                last_short_term_coupon_sent = {k for k in last_short_term_coupon_sent if k[0] == today_key}
         
-        # 1. Gece 23:45 Gün Sonu Başarı Raporu & CSV Gönderimi
-        if now.hour == 23 and now.minute == 45 and last_night_scan_date != now.date():
+        # 2. ── Gece 23:45 Gün Sonu Raporu (Kısa Vade ile aynı dakika — ayrı mod) ──
+        if h == 23 and m == 45 and last_night_scan_date != today_key:
             print("🌙 Gece 23:45 Gün Sonu Zamanlayıcısı Tetiklendi!")
             run_bot_scan(mode="night_2345")
-            last_night_scan_date = now.date()
-            
-        # 2. Her 2 Saatte Bir Yaklaşan Maç Uyarısı (7200 saniye)
+            last_night_scan_date = today_key
+
+        # 3. ── Her 2 Saatte Bir Yaklaşan Maç Bildirimi ──────────────────────────
         if time.time() - last_2h_scan_time >= 7200:
             print("⏳ 2 Saatlik Periyodik Zamanlayıcı Tetiklendi!")
             run_bot_scan(mode="every_2h")
             last_2h_scan_time = time.time()
-            
+
+        # 4. ── Her 3 Dakikada Bir Sonuç Kontrolü (TUTTU/YATTI) ─────────────────
+        if time.time() - last_score_check_time >= 180:
+            try:
+                _, filt_m = scanner.scan_bulletin(min_odds=1.00, max_odds=1.23, fetch_details=False)
+                up_res = check_and_update_won_matches(BOT_TOKEN, CHAT_ID, filt_m)
+                if up_res['updated'] > 0:
+                    print(f"[{now.strftime('%H:%M:%S')}] 🏆 {up_res['updated']} maç TUTTU/YATTI güncellendi.")
+            except Exception:
+                pass
+            last_score_check_time = time.time()
+
         time.sleep(30)

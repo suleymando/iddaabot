@@ -22,20 +22,31 @@ class BulletinScanner:
         }
 
     def fetch_bulletin_html(self) -> str:
+        def _decode(raw_bytes: bytes) -> str:
+            # Önce charset header'a bak, sonra sırayla dene
+            for enc in ('utf-8', 'windows-1254', 'latin-1'):
+                try:
+                    text = raw_bytes.decode(enc, errors='strict')
+                    # Bozuk windows-1254→latin-1 dönüşümünü yakala
+                    if 'Ã' in text or 'Å' in text:
+                        continue
+                    return text
+                except (UnicodeDecodeError, ValueError):
+                    continue
+            return raw_bytes.decode('utf-8', errors='replace')
+
         try:
             req = urllib.request.Request(self.url, headers=self.headers)
             raw_bytes = urllib.request.urlopen(req, timeout=20).read()
-            html = raw_bytes.decode('windows-1254', errors='ignore')
+            html = _decode(raw_bytes)
             if len(html) > 100000:
                 return html
         except Exception:
             pass
         req = urllib.request.Request(self.fallback_url, headers=self.headers)
         raw_bytes = urllib.request.urlopen(req, timeout=20).read()
-        try:
-            return raw_bytes.decode('windows-1254', errors='ignore')
-        except Exception:
-            return raw_bytes.decode('utf-8', errors='ignore')
+        return _decode(raw_bytes)
+
 
     def parse_matches(self, html: str) -> List[Dict[str, Any]]:
         tr_blocks = re.findall(r'<tr[^>]*>.*?</tr>', html, re.DOTALL | re.IGNORECASE)
@@ -142,15 +153,16 @@ class BulletinScanner:
             req = urllib.request.Request(url, headers=self.headers)
             raw_text = urllib.request.urlopen(req, timeout=8).read().decode('utf-8', errors='ignore')
             
+            # Clean unquoted keys and Date(...)
             json_text = re.sub(r'([{,])\s*([a-zA-Z0-9_]+)\s*:', r'\1"\2":', raw_text)
-            json_text = re.sub(r'/Date\((\d+)\)/', r'\1', json_text)
+            json_text = re.sub(r'\\?/Date\([^)]*\)\\?', '0', json_text)
             
             data = json.loads(json_text)
             event = data.get('Event', {})
-            markets = event.get('m', [])
+            markets = event.get('Markets') or event.get('m') or []
             
             details = {
-                'mbs': event.get('mbs', 1),
+                'mbs': event.get('mbs') or event.get('MBS', 1),
                 'iy_1_5_ust': None,
                 'iy_1_5_alt': None,
                 'iy_0_5_ust': None,
@@ -168,62 +180,88 @@ class BulletinScanner:
             }
             
             for m in markets:
-                mid = m.get('id')
-                o_str = m.get('o', '')
-                items = o_str.split('|') if o_str else []
+                mtype = m.get('MarketType')
+                if isinstance(mtype, dict):
+                    mid = mtype.get('Id')
+                else:
+                    mid = m.get('id')
+                    
+                mbs = m.get('MBS')
+                if mbs and not details['mbs']:
+                    details['mbs'] = mbs
+                    
+                outcomes = m.get('Outcomes')
+                if isinstance(outcomes, list):
+                    odd_by_no = {o.get('OutcomeNo'): o.get('Odd') for o in outcomes if isinstance(o, dict)}
+                    odd_by_name = {str(o.get('OutcomeName')).lower().strip(): o.get('Odd') for o in outcomes if isinstance(o, dict)}
+                    
+                    def get_odd(no, name_kw=None):
+                        v = odd_by_no.get(no)
+                        if (v is None or v == 0) and name_kw:
+                            for k, val in odd_by_name.items():
+                                if name_kw in k:
+                                    return val
+                        return v if v != 0 else None
+
+                    if mid == 14: # 1. Yarı 1,5 Alt/Üst
+                        details['iy_1_5_alt'] = get_odd(1, 'alt')
+                        details['iy_1_5_ust'] = get_odd(2, 'üst') or get_odd(2, 'st')
+                    elif mid == 209: # 1. Yarı 0,5 Alt/Üst
+                        details['iy_0_5_ust'] = get_odd(2, 'üst') or get_odd(2, 'st')
+                    elif mid == 5: # İY / MS
+                        details['iy_ms_2_1'] = get_odd(7, '2/1')
+                        details['iy_ms_1_x'] = get_odd(2, '1/x')
+                    elif mid == 7: # 1. Yarı Sonucu
+                        details['iy_1'] = get_odd(1, '1')
+                        details['iy_x'] = get_odd(2, 'x')
+                        details['iy_2'] = get_odd(3, '2')
+                    elif mid == 12: # 2,5 Alt/Üst
+                        details['ms_2_5_ust'] = get_odd(2, 'üst') or get_odd(2, 'st')
+                    elif mid == 38: # Karşılıklı Gol
+                        details['kg_var'] = get_odd(1, 'var')
+                    elif mid == 295: # Evsahibi İki Yarıda da Gol
+                        details['ev_iki_yari_gol'] = get_odd(1, 'atar')
+                    elif mid == 296: # Deplasman İki Yarıda da Gol
+                        details['dep_iki_yari_gol'] = get_odd(1, 'atar')
+                    elif mid == 256: # Deplasman 0,5 Alt/Üst
+                        details['dep_0_5_ust'] = get_odd(2, 'üst') or get_odd(2, 'st')
+                    elif mid in (20, 255): # Evsahibi Alt/Üst
+                        details['ev_0_5_ust'] = get_odd(2, 'üst') or get_odd(2, 'st')
                 
-                if mid == 14 and len(items) >= 2:
-                    try:
-                        details['iy_1_5_alt'] = float(items[0]) if items[0] and items[0] != '0' else None
-                        details['iy_1_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
-                    except Exception:
-                        pass
-                elif mid == 5:
-                    for item in items:
-                        parts = item.split(':')
-                        if len(parts) == 2:
-                            o_id, val = parts[0], parts[1]
-                            try:
-                                v_float = float(val) if val and val != '0' else None
-                                if o_id == '15':
-                                    details['iy_ms_2_1'] = v_float
-                                elif o_id == '7':
-                                    details['iy_ms_1_x'] = v_float
-                            except Exception:
-                                pass
-                elif mid == 7 and len(items) >= 3:
-                    try:
-                        details['iy_1'] = float(items[0]) if items[0] and items[0] != '0' else None
-                        details['iy_x'] = float(items[1]) if items[1] and items[1] != '0' else None
-                        details['iy_2'] = float(items[2]) if items[2] and items[2] != '0' else None
-                    except Exception:
-                        pass
-                elif mid == 12 and len(items) >= 2:
-                    try:
-                        details['ms_2_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
-                    except Exception:
-                        pass
-                elif mid == 38 and len(items) >= 2:
-                    try:
-                        details['kg_var'] = float(items[0]) if items[0] and items[0] != '0' else None
-                    except Exception:
-                        pass
-                elif mid == 209 and len(items) >= 2:
-                    try:
-                        details['iy_0_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
-                    except Exception:
-                        pass
-                elif mid == 295 and len(items) >= 1:
-                    try:
-                        details['ev_iki_yari_gol'] = float(items[0]) if items[0] and items[0] != '0' else None
-                    except Exception:
-                        pass
-                elif mid == 296 and len(items) >= 1:
-                    try:
-                        details['dep_iki_yari_gol'] = float(items[0]) if items[0] and items[0] != '0' else None
-                    except Exception:
-                        pass
-                        
+                elif isinstance(m.get('o'), str):
+                    o_str = m.get('o', '')
+                    items = o_str.split('|') if o_str else []
+                    if mid == 14 and len(items) >= 2:
+                        try:
+                            details['iy_1_5_alt'] = float(items[0]) if items[0] and items[0] != '0' else None
+                            details['iy_1_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
+                        except Exception: pass
+                    elif mid == 5:
+                        for item in items:
+                            parts = item.split(':')
+                            if len(parts) == 2:
+                                o_id, val = parts[0], parts[1]
+                                try:
+                                    v_float = float(val) if val and val != '0' else None
+                                    if o_id == '15': details['iy_ms_2_1'] = v_float
+                                    elif o_id == '7': details['iy_ms_1_x'] = v_float
+                                except Exception: pass
+                    elif mid == 7 and len(items) >= 3:
+                        try:
+                            details['iy_1'] = float(items[0]) if items[0] and items[0] != '0' else None
+                            details['iy_x'] = float(items[1]) if items[1] and items[1] != '0' else None
+                            details['iy_2'] = float(items[2]) if items[2] and items[2] != '0' else None
+                        except Exception: pass
+                    elif mid == 12 and len(items) >= 2:
+                        try: details['ms_2_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
+                        except Exception: pass
+                    elif mid == 38 and len(items) >= 2:
+                        try: details['kg_var'] = float(items[0]) if items[0] and items[0] != '0' else None
+                        except Exception: pass
+                    elif mid == 209 and len(items) >= 2:
+                        try: details['iy_0_5_ust'] = float(items[1]) if items[1] and items[1] != '0' else None
+                        except Exception: pass
+
             return details
         except Exception:
             return {}

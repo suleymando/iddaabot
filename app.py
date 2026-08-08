@@ -3,13 +3,19 @@ import pandas as pd
 import datetime
 import threading
 import time
+import plotly.express as px
+import plotly.graph_objects as go
 from bulletin_scanner import BulletinScanner
 from telegram_notifier import (
     send_telegram_message, 
     send_telegram_document, 
     generate_csv_bulletin, 
     format_telegram_2h_bulletin,
-    format_telegram_winrate_report
+    format_telegram_winrate_report,
+    send_matches_individually,
+    check_and_update_won_matches,
+    send_daily_parlay_coupon,
+    generate_daily_parlay_coupon
 )
 
 # Page Configuration
@@ -575,7 +581,35 @@ st.sidebar.markdown("### 📱 Telegram Bot Entegrasyonu")
 tg_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_BOT_TOKEN, type="password")
 tg_chat_id = st.sidebar.text_input("Telegram Chat ID", value=DEFAULT_CHAT_ID)
 
-if st.sidebar.button("📥 CSV Listesini Telegram'a Gönder", use_container_width=True, type="primary"):
+if st.sidebar.button("📱 Maçları Tek Tek Telegram'a Gönder", use_container_width=True, type="primary"):
+    if not tg_token or not tg_chat_id:
+        st.sidebar.error("Lütfen Bot Token ve Chat ID girin.")
+    else:
+        with st.spinner(f"{len(curr_filtered)} adet maç tek tek Telegram'a gönderiliyor..."):
+            res = send_matches_individually(tg_token, tg_chat_id, curr_filtered)
+            st.sidebar.success(f"✅ {res['sent']} maç Telegram'a tek tek kart olarak gönderildi! ({res['skipped']} maç önceden gönderilmişti)")
+
+if st.sidebar.button("👑 Günün Banko Kuponunu Telegram'a Gönder", use_container_width=True):
+    if not tg_token or not tg_chat_id:
+        st.sidebar.error("Lütfen Bot Token ve Chat ID girin.")
+    else:
+        with st.spinner("Günün banko kasa kuponu oluşturuluyor ve gönderiliyor..."):
+            ok = send_daily_parlay_coupon(tg_token, tg_chat_id, curr_filtered)
+            if ok:
+                coupon_data = generate_daily_parlay_coupon(curr_filtered)
+                st.sidebar.success(f"✅ Günün Banko Kuponu (3 Maç, Toplam Oran: {coupon_data['total_odds']:.2f}) Telegram'a gönderildi!")
+            else:
+                st.sidebar.error("Kupon gönderilemedi.")
+
+if st.sidebar.button("✅ Tutan Maçları Telegram'da Güncelle (Tik ✅)", use_container_width=True):
+    if not tg_token or not tg_chat_id:
+        st.sidebar.error("Lütfen Bot Token ve Chat ID girin.")
+    else:
+        with st.spinner("Canlı skorlar taranıyor ve tutan maçlar güncelleniyor..."):
+            res = check_and_update_won_matches(tg_token, tg_chat_id, st.session_state.all_matches)
+            st.sidebar.info(f"🔄 {res['updated']} tutan maç (✅) ve {res.get('goal_alerts', 0)} canlı gol uyarısı Telegram'a gönderildi!")
+
+if st.sidebar.button("📥 CSV Listesini Telegram'a Gönder", use_container_width=True):
     if not tg_token or not tg_chat_id:
         st.sidebar.error("Lütfen Bot Token ve Chat ID girin.")
     else:
@@ -627,7 +661,7 @@ with col4:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # Main View Tabs
-tab_cards_main, tab_table, tab_export = st.tabs(["🎴 Tarih Sekmeli Kartlar", "📊 Tablo Görünümü", "📋 Kuponu Kopyala & CSV İndir"])
+tab_cards_main, tab_table, tab_export, tab_analytics = st.tabs(["🎴 Tarih Sekmeli Kartlar", "📊 Tablo Görünümü", "📋 Kuponu Kopyala & CSV İndir", "📈 Canlı İstatistikler"])
 
 with tab_cards_main:
     if not curr_filtered:
@@ -666,9 +700,9 @@ with tab_cards_main:
                                 iy_1_5_u_str = f"{iy_1_5_u_odd:.2f}" if iy_1_5_u_odd else "N/A"
                                 
                                 if is_home_fav:
-                                    fav_gol_odd = m.get('ev_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('ev_0_5_ust')
+                                    fav_gol_odd = m.get('ev_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('ev_0_5_ust') or m.get('iy_1')
                                 else:
-                                    fav_gol_odd = m.get('dep_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('dep_0_5_ust')
+                                    fav_gol_odd = m.get('dep_iki_yari_gol') or m.get('iy_0_5_ust') or m.get('dep_0_5_ust') or m.get('iy_2')
                                     
                                 fav_gol_str = f"{fav_gol_odd:.2f}" if fav_gol_odd else "N/A"
                                 
@@ -807,3 +841,157 @@ with tab_export:
             )
     else:
         st.info("Kupon taslağı oluşturmak için maç bulunamadı.")
+
+# =====================================================================
+# 📈 TAB 4: CANLI İSTATİSTİKLER & BAŞARI ANALİZİ
+# =====================================================================
+with tab_analytics:
+    st.markdown("## 📈 Canlı Bülten İstatistikleri & Başarı Analizi")
+
+    all_matches = st.session_state.filtered_matches
+
+    if not all_matches:
+        st.info("İstatistik için önce bülteni yükleyin (Sol menüden 'Bülteni Canlı Yenile').")
+    else:
+        # ─── Row 1: Özet Metrikler ───────────────────────────────────────────
+        played  = [m for m in all_matches if m.get('iy_1_5_status') in ['TUTTU', 'YATTI']]
+        won     = [m for m in played if m.get('iy_1_5_status') == 'TUTTU']
+        lost    = [m for m in played if m.get('iy_1_5_status') == 'YATTI']
+        pending = [m for m in all_matches if m.get('iy_1_5_status') == 'OYNANMADI']
+
+        win_rate = len(won) / len(played) * 100 if played else 0.0
+        ev_fav   = sum(1 for m in all_matches if m.get('fav_side') == 'EV SAHİBİ')
+        dep_fav  = sum(1 for m in all_matches if m.get('fav_side') == 'DEPLASMAN')
+
+        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+        for col, val, lbl, color in zip(
+            [mc1, mc2, mc3, mc4, mc5],
+            [len(all_matches), len(played), len(won), len(lost), f"%{win_rate:.1f}"],
+            ["Toplam Maç", "Oynanan", "✅ Tutan", "❌ Yatan", "🔥 Başarı Oranı"],
+            ["#a5b4fc", "#38bdf8", "#34d399", "#f87171", "#fbbf24"]
+        ):
+            col.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-val" style="color:{color}">{val}</div>
+                <div class="metric-lbl">{lbl}</div>
+            </div>""", unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_l, col_r = st.columns(2)
+
+        # ─── Donut Chart: Tutan / Yatan / Bekleyen ───────────────────────────
+        with col_l:
+            st.markdown("### 🍩 İY 1.5 ÜST Sonuç Dağılımı")
+            if played or pending:
+                labels = ["✅ Tutan", "❌ Yatan", "⏳ Bekleyen"]
+                values = [len(won), len(lost), len(pending)]
+                colors = ["#10b981", "#ef4444", "#64748b"]
+
+                fig_donut = go.Figure(go.Pie(
+                    labels=labels,
+                    values=values,
+                    hole=0.55,
+                    marker=dict(colors=colors, line=dict(color="#0f172a", width=3)),
+                    textinfo="label+percent",
+                    textfont=dict(size=13, color="white"),
+                    hovertemplate="%{label}: %{value} maç<extra></extra>"
+                ))
+                fig_donut.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#e2e8f0"),
+                    showlegend=True,
+                    legend=dict(font=dict(color="#94a3b8"), bgcolor="rgba(0,0,0,0)"),
+                    margin=dict(t=20, b=20, l=20, r=20),
+                    height=340
+                )
+                fig_donut.add_annotation(
+                    text=f"<b>{win_rate:.1f}%</b><br>Başarı",
+                    x=0.5, y=0.5, showarrow=False,
+                    font=dict(size=18, color="#34d399")
+                )
+                st.plotly_chart(fig_donut, use_container_width=True)
+            else:
+                st.info("Henüz oynanan maç yok.")
+
+        # ─── Histogram: İY 1.5 ÜST Oran Dağılımı ────────────────────────────
+        with col_r:
+            st.markdown("### 📊 İY 1.5 ÜST Oran Dağılımı")
+            iy_odds = [m.get('iy_1_5_ust') for m in all_matches if m.get('iy_1_5_ust')]
+            if iy_odds:
+                fig_hist = px.histogram(
+                    x=iy_odds,
+                    nbins=20,
+                    labels={"x": "İY 1.5 ÜST Oranı"},
+                    color_discrete_sequence=["#6366f1"]
+                )
+                fig_hist.update_traces(marker_line_color="#a5b4fc", marker_line_width=1)
+                fig_hist.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(15,23,42,0.8)",
+                    font=dict(color="#e2e8f0"),
+                    xaxis=dict(gridcolor="rgba(255,255,255,0.08)", color="#94a3b8"),
+                    yaxis=dict(gridcolor="rgba(255,255,255,0.08)", color="#94a3b8"),
+                    margin=dict(t=20, b=20, l=20, r=20),
+                    height=340
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
+            else:
+                st.info("İY 1.5 ÜST oranı bulunan maç yok.")
+
+        st.markdown("---")
+
+        # ─── Ev Sahibi vs Deplasman Bar Chart ────────────────────────────────
+        col_b1, col_b2 = st.columns(2)
+
+        with col_b1:
+            st.markdown("### ⚽ Favori Taraf Dağılımı")
+            fig_bar = go.Figure(go.Bar(
+                x=["👑 Ev Sahibi", "✈️ Deplasman"],
+                y=[ev_fav, dep_fav],
+                marker_color=["#10b981", "#6366f1"],
+                text=[ev_fav, dep_fav],
+                textposition="outside",
+                textfont=dict(color="white", size=16)
+            ))
+            fig_bar.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(15,23,42,0.8)",
+                font=dict(color="#e2e8f0"),
+                xaxis=dict(gridcolor="rgba(255,255,255,0.08)", color="#94a3b8"),
+                yaxis=dict(gridcolor="rgba(255,255,255,0.08)", color="#94a3b8"),
+                margin=dict(t=30, b=20, l=20, r=20),
+                height=300
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        with col_b2:
+            st.markdown("### 👑 Günün Banko Kasa Kuponu")
+            coupon_data = generate_daily_parlay_coupon(curr_filtered, coupon_size=3)
+            coupon_matches = coupon_data['matches']
+            total_odds    = coupon_data['total_odds']
+
+            st.markdown(f"""
+            <div style="background:linear-gradient(135deg,rgba(16,185,129,0.18),rgba(245,158,11,0.12));
+                        border:1px solid rgba(16,185,129,0.45);border-radius:18px;padding:18px 22px;">
+                <div style="color:#34d399;font-size:18px;font-weight:800;margin-bottom:10px;">
+                    👑 GÜNÜN BANKO KUPONU &nbsp;
+                    <span style="background:#f59e0b;color:#000;border-radius:8px;padding:3px 10px;font-size:13px;">TOPLAM ORAN: {total_odds:.2f}</span>
+                </div>
+            """, unsafe_allow_html=True)
+
+            for i, cm in enumerate(coupon_matches, 1):
+                iy_o = cm.get('iy_1_5_ust')
+                iy_str = f"{iy_o:.2f}" if iy_o else "N/A"
+                st.markdown(f"""
+                <div style="background:rgba(15,23,42,0.6);border:1px solid rgba(255,255,255,0.09);
+                            border-radius:12px;padding:10px 14px;margin-bottom:8px;">
+                    <span style="color:#fbbf24;font-weight:800;">{i}.</span>
+                    <span style="color:#f1f5f9;font-weight:700;"> {cm['home']} vs {cm['away']}</span><br>
+                    <span style="color:#94a3b8;font-size:12px;">⏰ {cm['time']} | 📌 {cm['code']}</span>
+                    &nbsp;&nbsp;<span style="color:#34d399;font-weight:800;">🔥 İY 1.5 ÜST: {iy_str}</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.markdown("</div>", unsafe_allow_html=True)
