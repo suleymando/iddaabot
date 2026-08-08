@@ -22,30 +22,47 @@ class BulletinScanner:
         }
 
     def fetch_bulletin_html(self) -> str:
-        def _decode(raw_bytes: bytes) -> str:
-            # Önce charset header'a bak, sonra sırayla dene
-            for enc in ('utf-8', 'windows-1254', 'latin-1'):
+        def _decode(raw_bytes: bytes, http_charset: str = None) -> str:
+            # 1. HTTP header'dan gelen charset'i dene
+            if http_charset:
                 try:
-                    text = raw_bytes.decode(enc, errors='strict')
-                    # Bozuk windows-1254→latin-1 dönüşümünü yakala
-                    if 'Ã' in text or 'Å' in text:
-                        continue
-                    return text
-                except (UnicodeDecodeError, ValueError):
-                    continue
-            return raw_bytes.decode('utf-8', errors='replace')
+                    return raw_bytes.decode(http_charset, errors='ignore')
+                except (LookupError, UnicodeDecodeError):
+                    pass
+            # 2. HTML <meta charset> etiketinden charset bul
+            sniff = raw_bytes[:4096].decode('ascii', errors='ignore')
+            meta_cs = re.search(r'charset=["\']?([\w-]+)', sniff, re.IGNORECASE)
+            if meta_cs:
+                cs = meta_cs.group(1).strip()
+                try:
+                    return raw_bytes.decode(cs, errors='ignore')
+                except (LookupError, UnicodeDecodeError):
+                    pass
+            # 3. Mackolik her zaman windows-1254 → son fallback
+            return raw_bytes.decode('windows-1254', errors='ignore')
 
         try:
             req = urllib.request.Request(self.url, headers=self.headers)
-            raw_bytes = urllib.request.urlopen(req, timeout=20).read()
-            html = _decode(raw_bytes)
+            resp = urllib.request.urlopen(req, timeout=20)
+            raw_bytes = resp.read()
+            # Content-Type header'dan charset al
+            ct = resp.headers.get('Content-Type', '')
+            cs_match = re.search(r'charset=([\w-]+)', ct, re.IGNORECASE)
+            http_charset = cs_match.group(1) if cs_match else None
+            html = _decode(raw_bytes, http_charset)
             if len(html) > 100000:
                 return html
         except Exception:
             pass
+
         req = urllib.request.Request(self.fallback_url, headers=self.headers)
-        raw_bytes = urllib.request.urlopen(req, timeout=20).read()
-        return _decode(raw_bytes)
+        resp = urllib.request.urlopen(req, timeout=20)
+        raw_bytes = resp.read()
+        ct = resp.headers.get('Content-Type', '')
+        cs_match = re.search(r'charset=([\w-]+)', ct, re.IGNORECASE)
+        http_charset = cs_match.group(1) if cs_match else None
+        return _decode(raw_bytes, http_charset)
+
 
 
     def parse_matches(self, html: str) -> List[Dict[str, Any]]:
