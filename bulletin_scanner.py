@@ -5,7 +5,8 @@ import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Tuple, Optional
 
-MACKOLIK_URL = 'https://arsiv.mackolik.com/Iddaa-Programi'
+MACKOLIK_URL = "https://arsiv.mackolik.com/AjaxHandlers/IddaaHandler.aspx?command=tab&type=1&st=1&l=-1&d=-1&i=0&t=&ip=1&w=-1&g=7&np=0&srt=1&srtd=1"
+MACKOLIK_FALLBACK_URL = "https://arsiv.mackolik.com/Iddaa-Programi"
 
 class BulletinScanner:
     """
@@ -13,6 +14,7 @@ class BulletinScanner:
     """
     def __init__(self, url: str = MACKOLIK_URL):
         self.url = url
+        self.fallback_url = MACKOLIK_FALLBACK_URL
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -20,8 +22,16 @@ class BulletinScanner:
         }
 
     def fetch_bulletin_html(self) -> str:
-        req = urllib.request.Request(self.url, headers=self.headers)
-        raw_bytes = urllib.request.urlopen(req, timeout=15).read()
+        try:
+            req = urllib.request.Request(self.url, headers=self.headers)
+            raw_bytes = urllib.request.urlopen(req, timeout=20).read()
+            html = raw_bytes.decode('windows-1254', errors='ignore')
+            if len(html) > 100000:
+                return html
+        except Exception:
+            pass
+        req = urllib.request.Request(self.fallback_url, headers=self.headers)
+        raw_bytes = urllib.request.urlopen(req, timeout=20).read()
         try:
             return raw_bytes.decode('windows-1254', errors='ignore')
         except Exception:
